@@ -1,0 +1,7 @@
+order_id,customer,amount,empty_notes,priority
+ORD-001,Acme Corp,1200.5,,High
+ORD-002,Beta LLC,,,Low
+ORD-003,,450.0,,Medium
+ORD-001,Acme Corp,1200.5,,High
+ORD-004,Delta Inc,8900.0,,
+ORD-005,Echo Systems,340.25,,Low

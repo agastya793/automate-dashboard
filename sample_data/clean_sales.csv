@@ -1,0 +1,6 @@
+transaction_id,order_date,customer_name,category,units,revenue,margin_pct,is_fulfilled
+TXN1001,2026-01-10,Apex Retail,Hardware,12,14400.0,22.5%,True
+TXN1002,2026-01-12,Global Logistics,Software,5,7500.5,35.0%,True
+TXN1003,2026-01-14,Nexus Systems,Services,2,4200.0,45.0%,False
+TXN1004,2026-01-15,Vanguard Corp,Hardware,8,9600.0,20.0%,True
+TXN1005,2026-01-18,Solaria Tech,Software,25,31250.0,38.2%,True
