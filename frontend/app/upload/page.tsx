@@ -151,6 +151,7 @@ function TypeBadge({ type }: { type: string }) {
 
 export default function UploadPage() {
   const router = useRouter();
+  const { user, workspace, getAccessToken } = useAuth();
   const {
     file: contextFile,
     sheetName: contextSheet,
@@ -160,6 +161,10 @@ export default function UploadPage() {
     generateDashboard,
     isGenerating,
     error: dashboardError,
+    saveDatasetMetadata,
+    savedDatasetId,
+    isPersisting,
+    persistStatus,
     clearSession,
   } = useDashboard();
 
@@ -195,20 +200,38 @@ export default function UploadPage() {
           formData.append("sheet_name", sheetName);
         }
 
+        const token = await getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
         const res = await fetch(`${API_BASE_URL}/api/datasets/preview`, {
           method: "POST",
+          headers,
           body: formData,
         });
 
         if (!res.ok) {
           let errorMsg = `Server returned status ${res.status}`;
-          try {
-            const errJson = await res.json();
-            if (errJson?.detail) {
-              errorMsg = errJson.detail;
+          if (res.status === 401) {
+            errorMsg =
+              "Authentication required. Please sign in to analyze datasets and generate dashboards.";
+          } else if (res.status === 503) {
+            errorMsg =
+              "Backend authentication service is unavailable. Please verify your Supabase configuration.";
+          } else {
+            try {
+              const errJson = await res.json();
+              if (errJson?.detail) {
+                errorMsg =
+                  typeof errJson.detail === "string"
+                    ? errJson.detail
+                    : JSON.stringify(errJson.detail);
+              }
+            } catch {
+              // Keep default status message if body is not JSON
             }
-          } catch {
-            // Keep default status message if body is not JSON
           }
           setServerError(errorMsg);
           return;
@@ -216,9 +239,21 @@ export default function UploadPage() {
 
         const data: DatasetPreviewResponse = await res.json();
         setPreviewData(data);
-        const resolvedSheet = data.selected_sheet || (data.sheet_names.length > 0 ? data.sheet_names[0] : null);
+        const resolvedSheet =
+          data.selected_sheet || (data.sheet_names.length > 0 ? data.sheet_names[0] : null);
         setActiveSheet(resolvedSheet);
         setSessionData(file, resolvedSheet);
+
+        // If user is authenticated and workspace exists, persist file to private storage & DB
+        if (user && workspace) {
+          saveDatasetMetadata(
+            file,
+            data.sheet_names,
+            resolvedSheet,
+            data.row_count,
+            data.column_count
+          );
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
@@ -233,7 +268,7 @@ export default function UploadPage() {
         setIsSwitchingSheet(false);
       }
     },
-    [setSessionData]
+    [setSessionData, getAccessToken, user, workspace, saveDatasetMetadata]
   );
 
   const validateAndSetFile = (file: File) => {
@@ -318,8 +353,14 @@ export default function UploadPage() {
           if (contextSheet) {
             formData.append("sheet_name", contextSheet);
           }
+          const token = await getAccessToken();
+          const headers: Record<string, string> = {};
+          if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+          }
           const res = await fetch(`${API_BASE_URL}/api/datasets/preview`, {
             method: "POST",
+            headers,
             body: formData,
           });
           if (res.ok && !cancelled) {
@@ -337,7 +378,7 @@ export default function UploadPage() {
     return () => {
       cancelled = true;
     };
-  }, [contextFile, contextSheet, previewData, isLoading]);
+  }, [contextFile, contextSheet, previewData, isLoading, getAccessToken]);
 
   // Chart configuration selection count
   const activeConfigured = configuredCharts.filter((c) => !c.dismissed);
@@ -632,9 +673,45 @@ export default function UploadPage() {
                   </p>
                 </div>
 
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Validation Passed</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Validation Passed</span>
+                  </div>
+
+                  {isPersisting && (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                      <RotateCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                      <span>Saving to Workspace Storage...</span>
+                    </div>
+                  )}
+
+                  {!isPersisting && savedDatasetId && (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Saved to Private Storage</span>
+                    </div>
+                  )}
+
+                  {!isPersisting && !savedDatasetId && !user && (
+                    <Link
+                      href="/login"
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
+                    >
+                      <Info className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Session Only — Sign in to save dataset</span>
+                    </Link>
+                  )}
+
+                  {!isPersisting && !savedDatasetId && user && persistStatus?.type === "error" && (
+                    <div
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200"
+                      title={persistStatus.message}
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                      <span>Storage save failed</span>
+                    </div>
+                  )}
                 </div>
               </div>
 

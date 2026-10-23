@@ -23,8 +23,13 @@ import {
   Table,
   CheckCircle2,
   TrendingUp,
+  Bookmark,
+  Save,
+  Check,
+  Lock,
 } from "lucide-react";
 import { useDashboard, GlobalFilterInput } from "@/context/DashboardContext";
+import { useAuth } from "@/context/AuthContext";
 import { Header } from "@/components/Header";
 import { SummaryCard } from "@/components/SummaryCard";
 import { EmptyState } from "@/components/EmptyState";
@@ -32,6 +37,7 @@ import { DashboardChartCard } from "@/components/DashboardChartRenderer";
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { user, role, isConfigured } = useAuth();
   const {
     file,
     sheetName,
@@ -39,10 +45,22 @@ export default function DashboardPage() {
     activeFilters,
     isGenerating,
     error,
+    savedDatasetId,
+    savedReportId,
+    savedReportName,
+    isPersisting,
+    persistStatus,
+    saveCurrentReport,
     generateDashboard,
     resetFilters,
     clearSession,
   } = useDashboard();
+
+  // Save report modal state
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [reportNameInput, setReportNameInput] = useState("");
+  const [saveLocalError, setSaveLocalError] = useState<string | null>(null);
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
   // Local filter form state initialized from dashboardData and activeFilters
   const avail = dashboardData?.available_filters;
@@ -71,15 +89,24 @@ export default function DashboardPage() {
           <EmptyState
             icon={FileSpreadsheet}
             title="No Active Dataset in Session"
-            description="In-memory session state is cleared on page refreshes to protect dataset privacy and comply with zero-persistence policies. Upload an Excel or CSV file to build an interactive dashboard."
+            description="In-memory calculations are transient. To inspect an interactive dashboard, upload a new Excel or CSV file or reopen a previously saved report from your private workspace."
             action={
-              <Link
-                href="/upload"
-                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
-              >
-                <UploadCloud className="w-4 h-4" />
-                <span>Upload Dataset</span>
-              </Link>
+              <div className="flex items-center gap-3 flex-wrap justify-center">
+                <Link
+                  href="/upload"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>Upload Dataset</span>
+                </Link>
+                <Link
+                  href="/reports"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-xs transition-colors"
+                >
+                  <Bookmark className="w-4 h-4 text-brand-600" />
+                  <span>View Saved Reports</span>
+                </Link>
+              </div>
             }
           />
         </div>
