@@ -4,6 +4,7 @@ import { useState, useRef, DragEvent, ChangeEvent, useCallback, useEffect } from
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useDashboard } from "@/context/DashboardContext";
+import { useAuth } from "@/context/AuthContext";
 import {
   UploadCloud,
   FileSpreadsheet,
