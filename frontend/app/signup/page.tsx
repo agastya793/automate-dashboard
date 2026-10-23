@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BarChart3, Lock, Mail, User as UserIcon, ArrowRight, AlertCircle, Info, CheckCircle2, RotateCw } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
-export default function SignUpPage() {
+function SignUpForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirectTo") || "/upload";
@@ -234,5 +234,19 @@ export default function SignUpPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-[80vh] flex items-center justify-center">
+          <RotateCw className="w-6 h-6 animate-spin text-brand-600" />
+        </div>
+      }
+    >
+      <SignUpForm />
+    </Suspense>
   );
 }

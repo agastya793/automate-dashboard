@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BarChart3, Lock, Mail, ArrowRight, AlertCircle, Info, RotateCw } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirectTo") || "/upload";
@@ -109,6 +109,12 @@ export default function LoginPage() {
                 <label className="block text-xs font-semibold text-slate-700">
                   Password
                 </label>
+                <Link
+                  href="/forgot-password"
+                  className="text-[11px] font-medium text-brand-600 hover:text-brand-700"
+                >
+                  Forgot password?
+                </Link>
               </div>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -158,5 +164,19 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-[80vh] flex items-center justify-center">
+          <RotateCw className="w-6 h-6 animate-spin text-brand-600" />
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

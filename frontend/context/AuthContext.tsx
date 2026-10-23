@@ -46,10 +46,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [role, setRole] = useState<WorkspaceRole | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
   const configured = isSupabaseConfigured();
+  const [isLoading, setIsLoading] = useState(() => isSupabaseConfigured());
+  const [error, setError] = useState<string | null>(null);
 
   // Load workspace & profile for current user
   const loadUserData = useCallback(async (activeUser: User) => {
@@ -118,13 +117,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Listen to auth state changes
   useEffect(() => {
     if (!configured) {
-      setIsLoading(false);
       return;
     }
 
     const supabase = createClient();
     if (!supabase) {
-      setIsLoading(false);
       return;
     }
 

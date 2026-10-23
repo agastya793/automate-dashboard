@@ -552,7 +552,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           .map((c) => ({
             id: c.id,
             chart_type: c.chart_type,
-            title: c.original?.title || c.title || "Chart",
+            title: c.original?.title || (c as any).title || "Chart",
             dimension_column: c.dimension_column,
             secondary_dimension_column: c.secondary_dimension_column,
             date_column: c.date_column,
