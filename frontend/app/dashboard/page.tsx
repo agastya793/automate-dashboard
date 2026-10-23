@@ -213,6 +213,31 @@ export default function DashboardPage() {
     router.push("/upload");
   };
 
+  const handleOpenSaveModal = () => {
+    setReportNameInput(
+      savedReportName || `${data.filename.replace(/\.[^/.]+$/, "")} Report`
+    );
+    setSaveLocalError(null);
+    setSaveSuccessMsg(null);
+    setIsSaveModalOpen(true);
+  };
+
+  const handleConfirmSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportNameInput.trim()) {
+      setSaveLocalError("Report name cannot be empty.");
+      return;
+    }
+    setSaveLocalError(null);
+    const res = await saveCurrentReport(reportNameInput.trim());
+    if (res.error) {
+      setSaveLocalError(res.error);
+    } else {
+      setSaveSuccessMsg(`Report "${reportNameInput.trim()}" saved to workspace!`);
+      setTimeout(() => setIsSaveModalOpen(false), 1200);
+    }
+  };
+
   return (
     <div className="flex flex-col min-h-full">
       <Header
@@ -254,6 +279,50 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {savedReportName ? (
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800">
+                <Bookmark className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600" />
+                <span>Saved: {savedReportName}</span>
+              </div>
+            ) : null}
+
+            {user ? (
+              role === "viewer" ? (
+                <button
+                  type="button"
+                  disabled
+                  title="Viewers cannot create or modify reports."
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-400 bg-slate-100 rounded-lg border border-slate-200 cursor-not-allowed"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Save Report (Viewer)</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleOpenSaveModal}
+                  disabled={isPersisting}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
+                >
+                  {isPersisting ? (
+                    <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Bookmark className="w-3.5 h-3.5" />
+                  )}
+                  <span>{savedReportId ? "Update Report" : "Save Report"}</span>
+                </button>
+              )
+            ) : (
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 rounded-lg border border-brand-200 transition-colors"
+                title="Sign in to save reports to your workspace"
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>Sign in to Save</span>
+              </Link>
+            )}
+
             <button
               type="button"
               onClick={() => router.push("/upload")}
@@ -626,6 +695,119 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
+
+      {/* Save Report Modal Dialog */}
+      {isSaveModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-5 animate-in zoom-in-95">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600">
+                  <Bookmark className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {savedReportId ? "Update Saved Report" : "Save Report"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Persist configuration to reopen anytime from your workspace.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSaveModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {saveSuccessMsg ? (
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                <span className="font-semibold">{saveSuccessMsg}</span>
+              </div>
+            ) : (
+              <form onSubmit={handleConfirmSave} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="report-name"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    Report Name
+                  </label>
+                  <input
+                    id="report-name"
+                    type="text"
+                    value={reportNameInput}
+                    onChange={(e) => setReportNameInput(e.target.value)}
+                    placeholder="e.g. Q3 Sales & Operations Overview"
+                    className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500 text-slate-900"
+                    autoFocus
+                    required
+                  />
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1 text-xs text-slate-600">
+                  <p className="font-semibold text-slate-800">What will be saved:</p>
+                  <ul className="list-disc list-inside space-y-0.5 text-slate-500">
+                    <li>
+                      Source dataset:{" "}
+                      <span className="font-medium text-slate-700">{data.filename}</span>
+                    </li>
+                    <li>{data.charts.length} confirmed chart configurations</li>
+                    <li>
+                      {summary.is_filtered
+                        ? "Active date and category filters"
+                        : "Full dataset configuration"}
+                    </li>
+                  </ul>
+                </div>
+
+                {saveLocalError && (
+                  <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                    <span>{saveLocalError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSaveModalOpen(false)}
+                    disabled={isPersisting}
+                    className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isPersisting}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm"
+                  >
+                    {isPersisting ? (
+                      <>
+                        <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save to Workspace</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
