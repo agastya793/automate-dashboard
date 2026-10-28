@@ -58,22 +58,6 @@ function LoginForm() {
           </p>
         </div>
 
-        {/* Unconfigured Supabase Banner */}
-        {!isConfigured && (
-          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2">
-            <div className="flex items-center gap-2 font-bold text-amber-800">
-              <Info className="w-4 h-4 flex-shrink-0" />
-              <span>Supabase Project Not Configured</span>
-            </div>
-            <p className="text-[11px] leading-relaxed text-amber-800/90">
-              To connect authentication and private storage, set{" "}
-              <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
-              <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in{" "}
-              <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">frontend/.env.local</code>.
-            </p>
-          </div>
-        )}
-
         {/* Error Alert */}
         {error && (
           <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 flex items-center gap-2.5 text-xs text-rose-700">
@@ -133,7 +117,7 @@ function LoginForm() {
 
             <button
               type="submit"
-              disabled={isSubmitting || !isConfigured}
+              disabled={isSubmitting}
               className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 rounded-lg transition-colors shadow-sm cursor-pointer disabled:cursor-not-allowed"
             >
               {isSubmitting ? (

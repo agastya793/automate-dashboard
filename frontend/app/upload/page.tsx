@@ -25,10 +25,24 @@ import {
   Layers,
   RotateCw,
   Search,
+  Clock,
+  Database,
+  HardDrive,
+  RefreshCw,
+  Play,
+  FileCode,
 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { RecommendedCharts, ChartRecommendation } from "@/components/RecommendedCharts";
+import { WorkbookMappingWorkspace } from "@/components/WorkbookMappingWorkspace";
+import {
+  WorkbookScanResponse,
+  NormalizationResponse,
+  AsyncUploadStatus,
+  DetectedDatasetSummary,
+} from "@/lib/mappingTypes";
 import { formatBytes } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types matching backend Phase 2 contract
@@ -67,7 +81,7 @@ export interface DatasetPreviewResponse {
 }
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:18001";
 
 // Max upload limit configuration (aligned with backend default: 10 MB = 10,485,760 bytes)
 const MAX_UPLOAD_BYTES =
@@ -178,8 +192,279 @@ export default function UploadPage() {
   const [previewData, setPreviewData] = useState<DatasetPreviewResponse | null>(null);
   const [activeSheet, setActiveSheet] = useState<string | null>(() => contextSheet);
   const [columnFilter, setColumnFilter] = useState("");
+  const [scanResult, setScanResult] = useState<WorkbookScanResponse | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [viewMode, setViewMode] = useState<"mapping" | "preview">("mapping");
+
+  // Milestone 3: Asynchronous Ingestion & Polling State
+  const [asyncUpload, setAsyncUpload] = useState<AsyncUploadStatus | null>(null);
+  const [detectedDatasets, setDetectedDatasets] = useState<DetectedDatasetSummary[]>([]);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pollUploadStatusRef = useRef<((uploadId: string, attempt?: number) => Promise<void>) | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollingTimerRef.current) {
+      clearTimeout(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, [stopPolling]);
+
+  const pollUploadStatus = useCallback(
+    async (uploadId: string, attempt: number = 0) => {
+      try {
+        const res = await apiFetch(`/api/uploads/${uploadId}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            setServerError(`Upload job '${uploadId}' was not found on the server (404).`);
+            stopPolling();
+            return;
+          }
+          if (res.status === 401 || res.status === 403) {
+            setServerError("Session expired or access denied to upload job.");
+            stopPolling();
+            return;
+          }
+          return;
+        }
+
+        const data: AsyncUploadStatus = await res.json();
+        setAsyncUpload(data);
+
+        if (data.status === "needs_mapping" || data.status === "ready") {
+          setIsScanning(false);
+          const dsRes = await apiFetch(`/api/uploads/${uploadId}/datasets`);
+          if (dsRes.ok) {
+            const datasets: DetectedDatasetSummary[] = await dsRes.json();
+            setDetectedDatasets(datasets);
+          }
+          const scanRes = await apiFetch(`/api/uploads/${uploadId}/scan`);
+          if (scanRes.ok) {
+            setScanResult(await scanRes.json());
+          }
+          stopPolling();
+          return;
+        }
+
+        if (data.status === "failed") {
+          setIsScanning(false);
+          setServerError(
+            data.error_message ||
+              "Asynchronous processing failed in background worker. You can retry the job below."
+          );
+          stopPolling();
+          return;
+        }
+
+        if (attempt < 40) {
+          const delay = Math.min(1500 + attempt * 200, 4000);
+          pollingTimerRef.current = setTimeout(() => {
+            pollUploadStatusRef.current?.(uploadId, attempt + 1);
+          }, delay);
+        }
+      } catch (err) {
+        console.error("Polling status error:", err);
+      }
+    },
+    [stopPolling]
+  );
+
+  useEffect(() => {
+    pollUploadStatusRef.current = pollUploadStatus;
+  }, [pollUploadStatus]);
+
+  const executeAsyncUpload = useCallback(
+    async (file: File) => {
+      stopPolling();
+      setAsyncUpload(null);
+      setDetectedDatasets([]);
+      setIsScanning(true);
+      setServerError(null);
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await apiFetch("/api/uploads", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.status === 202) {
+          const accepted = await res.json();
+          setAsyncUpload({
+            upload_id: accepted.upload_id,
+            original_filename: accepted.original_filename,
+            sanitized_filename: accepted.original_filename,
+            file_size_bytes: accepted.file_size_bytes,
+            file_type: file.name.endsWith(".csv") ? "csv" : "xlsx",
+            status: "queued",
+            stage: "queued",
+            progress: 0,
+            error_code: null,
+            error_message: null,
+            dataset_count: 0,
+            created_at: accepted.created_at,
+            updated_at: accepted.created_at,
+          });
+
+          pollUploadStatus(accepted.upload_id);
+        } else {
+          let errorMsg = `Upload failed with status ${res.status}`;
+          if (res.status === 404) {
+            errorMsg = "Upload endpoint not found (404). Please ensure the backend server is running and accessible.";
+          } else if (res.status === 401) {
+            errorMsg = "Authentication required. Please sign in to upload workbooks.";
+          } else if (res.status === 403) {
+            errorMsg = "Access denied. You do not have permission to upload workbooks in this workspace.";
+          } else if (res.status === 413) {
+            errorMsg = `File size exceeds the server upload limit (${MAX_UPLOAD_MB} MB).`;
+          } else if (res.status === 415) {
+            errorMsg = "Unsupported file format. Please upload an Excel (.xlsx) or CSV (.csv) file.";
+          } else {
+            try {
+              const errJson = await res.json();
+              if (errJson?.detail) {
+                const detail = typeof errJson.detail === "string" ? errJson.detail : JSON.stringify(errJson.detail);
+                errorMsg = detail === "Not Found" ? "Upload endpoint or resource not found (404)." : detail;
+              }
+            } catch {
+              // fallback
+            }
+          }
+          setServerError(errorMsg);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
+          setServerError(
+            `Backend service is offline. Could not reach FastAPI at ${API_BASE_URL}. Please ensure the backend server is running.`
+          );
+        } else {
+          setServerError(`Upload request failed: ${message}`);
+        }
+      }
+    },
+    [pollUploadStatus, stopPolling]
+  );
+
+  const handleRetryAsync = useCallback(async () => {
+    if (!asyncUpload?.upload_id) return;
+    setIsRetrying(true);
+    setServerError(null);
+    try {
+      const res = await apiFetch(`/api/uploads/${asyncUpload.upload_id}/retry`, {
+        method: "POST",
+      });
+
+      if (res.ok) {
+        setAsyncUpload((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "queued",
+                stage: "retry_queued",
+                error_message: null,
+                error_code: null,
+              }
+            : null
+        );
+        pollUploadStatus(asyncUpload.upload_id);
+      } else {
+        const errJson = await res.json().catch(() => null);
+        const detail = errJson?.detail;
+        setServerError(
+          detail === "Not Found"
+            ? "Upload record not found for retry (404)."
+            : detail || `Retry failed with status ${res.status}`
+        );
+      }
+    } catch {
+      setServerError("Retry request failed. Backend service may be unreachable.");
+    } finally {
+      setIsRetrying(false);
+    }
+  }, [asyncUpload, pollUploadStatus]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleMappingApplied = useCallback(
+    async (normResult: NormalizationResponse) => {
+      // Milestone 3: Trigger background normalisation to Parquet if async upload is active
+      if (asyncUpload?.upload_id) {
+        try {
+          const formData = new FormData();
+          // The mapping workspace has already applied the user's decisions.
+          // Send that exact template to the persisted pipeline; using only a
+          // template id here previously caused the backend to fall back to an
+          // empty auto-generated mapping.
+          formData.append(
+            "template_json",
+            JSON.stringify(
+              normResult.template || {
+                id: normResult.template_id || `runtime-${asyncUpload.upload_id}`,
+                name: `Mapping for ${asyncUpload.original_filename}`,
+                version: normResult.template_version || 1,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                blocks: [],
+                global_warnings_acknowledged: true,
+              }
+            )
+          );
+
+          const res = await apiFetch(`/api/uploads/${asyncUpload.upload_id}/normalize`, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (res.ok) {
+            setAsyncUpload((prev) =>
+              prev ? { ...prev, status: "scanning", stage: "normalizing", progress: 50 } : null
+            );
+            pollUploadStatus(asyncUpload.upload_id);
+          }
+        } catch (err) {
+          console.error("Background normalisation error:", err);
+        }
+      }
+
+      if (normResult.tables && normResult.tables.length > 0) {
+        const primaryTable = normResult.tables[0];
+        const cols: ColumnProfile[] = primaryTable.columns.map((c) => ({
+          name: c.name,
+          inferred_type: c.role === "measure" ? "numeric" : c.role === "date" ? "date" : "text",
+          missing_count: 0,
+          missing_pct: 0,
+          unique_count: primaryTable.row_count,
+        }));
+
+        setPreviewData((prev) => ({
+          filename: normResult.filename,
+          file_type: normResult.filename.endsWith(".csv") ? "csv" : "xlsx",
+          sheet_names: normResult.tables.map((t) => t.sheet),
+          selected_sheet: primaryTable.sheet,
+          row_count: primaryTable.row_count,
+          column_count: primaryTable.column_count,
+          column_names: primaryTable.columns.map((c) => c.name),
+          columns: cols,
+          duplicate_row_count: 0,
+          total_missing_cells: 0,
+          preview_rows: primaryTable.rows.slice(0, 20),
+          warnings: normResult.warnings,
+          chart_recommendations: prev?.chart_recommendations || [],
+        }));
+        setViewMode("preview");
+      }
+    },
+    [asyncUpload, pollUploadStatus]
+  );
 
   // -------------------------------------------------------------------------
   // Upload and parse handler
@@ -200,34 +485,36 @@ export default function UploadPage() {
           formData.append("sheet_name", sheetName);
         }
 
-        const token = await getAccessToken();
-        const headers: Record<string, string> = {};
-        if (token) {
-          headers["Authorization"] = `Bearer ${token}`;
-        }
-
-        const res = await fetch(`${API_BASE_URL}/api/datasets/preview`, {
+        const res = await apiFetch("/api/datasets/preview", {
           method: "POST",
-          headers,
           body: formData,
         });
 
         if (!res.ok) {
           let errorMsg = `Server returned status ${res.status}`;
-          if (res.status === 401) {
+          if (res.status === 404) {
+            errorMsg = "Preview endpoint or sheet not found (404). Please ensure the backend server is running.";
+          } else if (res.status === 401) {
             errorMsg =
               "Authentication required. Please sign in to analyze datasets and generate dashboards.";
+          } else if (res.status === 403) {
+            errorMsg = "Access denied. You do not have permission to view datasets in this workspace.";
+          } else if (res.status === 413) {
+            errorMsg = `File size exceeds the server upload limit (${MAX_UPLOAD_MB} MB).`;
+          } else if (res.status === 415) {
+            errorMsg = "Unsupported file format. Please upload an Excel (.xlsx) or CSV (.csv) file.";
           } else if (res.status === 503) {
             errorMsg =
-              "Backend authentication service is unavailable. Please verify your Supabase configuration.";
+              "Backend authentication service is unavailable. Please verify your backend server.";
           } else {
             try {
               const errJson = await res.json();
               if (errJson?.detail) {
-                errorMsg =
+                const detail =
                   typeof errJson.detail === "string"
                     ? errJson.detail
                     : JSON.stringify(errJson.detail);
+                errorMsg = detail === "Not Found" ? "Requested resource or worksheet not found (404)." : detail;
               }
             } catch {
               // Keep default status message if body is not JSON
@@ -243,17 +530,6 @@ export default function UploadPage() {
           data.selected_sheet || (data.sheet_names.length > 0 ? data.sheet_names[0] : null);
         setActiveSheet(resolvedSheet);
         setSessionData(file, resolvedSheet);
-
-        // If user is authenticated and workspace exists, persist file to private storage & DB
-        if (user && workspace) {
-          saveDatasetMetadata(
-            file,
-            data.sheet_names,
-            resolvedSheet,
-            data.row_count,
-            data.column_count
-          );
-        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
@@ -268,7 +544,7 @@ export default function UploadPage() {
         setIsSwitchingSheet(false);
       }
     },
-    [setSessionData, getAccessToken, user, workspace, saveDatasetMetadata]
+    [setSessionData]
   );
 
   const validateAndSetFile = (file: File) => {
@@ -295,7 +571,13 @@ export default function UploadPage() {
     }
 
     setSelectedFile(file);
-    executePreview(file, null);
+    // Asynchronous ingestion pipeline & structural scan (primary workflow)
+    executeAsyncUpload(file);
+
+    // Flat tabular profiling preview is only appropriate for single-table CSV files
+    if (extension === ".csv") {
+      executePreview(file, null);
+    }
   };
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -325,6 +607,7 @@ export default function UploadPage() {
 
   const handleRemoveFile = () => {
     setSelectedFile(null);
+    setScanResult(null);
     setClientError(null);
     setServerError(null);
     setLocalGenError(null);
@@ -353,14 +636,8 @@ export default function UploadPage() {
           if (contextSheet) {
             formData.append("sheet_name", contextSheet);
           }
-          const token = await getAccessToken();
-          const headers: Record<string, string> = {};
-          if (token) {
-            headers["Authorization"] = `Bearer ${token}`;
-          }
-          const res = await fetch(`${API_BASE_URL}/api/datasets/preview`, {
+          const res = await apiFetch("/api/datasets/preview", {
             method: "POST",
-            headers,
             body: formData,
           });
           if (res.ok && !cancelled) {
@@ -529,7 +806,15 @@ export default function UploadPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => executePreview(selectedFile, activeSheet)}
+                    onClick={() => {
+                      if (selectedFile) {
+                        setServerError(null);
+                        executeAsyncUpload(selectedFile);
+                        if (selectedFile.name.endsWith(".csv")) {
+                          executePreview(selectedFile, activeSheet);
+                        }
+                      }
+                    }}
                     disabled={isLoading || isSwitchingSheet}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 rounded-lg border border-brand-200 transition-colors"
                     title="Reprocess file"
@@ -563,7 +848,17 @@ export default function UploadPage() {
                 <div className="mt-2.5 flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => selectedFile && executePreview(selectedFile, activeSheet)}
+                    onClick={() => {
+                      setServerError(null);
+                      if (asyncUpload?.upload_id && asyncUpload.status === "failed") {
+                        handleRetryAsync();
+                      } else if (selectedFile) {
+                        executeAsyncUpload(selectedFile);
+                        if (selectedFile.name.endsWith(".csv")) {
+                          executePreview(selectedFile, activeSheet);
+                        }
+                      }
+                    }}
                     className="px-2.5 py-1 text-xs font-semibold bg-rose-100 hover:bg-rose-200 text-rose-900 rounded transition-colors"
                   >
                     Try Again
@@ -599,9 +894,237 @@ export default function UploadPage() {
         )}
 
         {/* ================================================================= */}
-        {/* Loaded Dataset Section (Steps 2, 3, 4)                            */}
+        {/* Milestone 2: View Switcher (Mapping Workspace vs Profiling View) */}
         {/* ================================================================= */}
-        {previewData && !isLoading && (
+        {selectedFile && !clientError && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setViewMode("mapping")}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-2 ${
+                  viewMode === "mapping"
+                    ? "bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-500"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                <TableProperties className="w-3.5 h-3.5" />
+                <span>Interactive Mapping & Normalisation</span>
+                {scanResult ? (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-bold">
+                    {scanResult.block_count} table{scanResult.block_count !== 1 ? "s" : ""}
+                  </span>
+                ) : isScanning ? (
+                  <RotateCw className="w-3 h-3 animate-spin text-white" />
+                ) : null}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode("preview");
+                  if (!previewData && selectedFile) {
+                    executePreview(selectedFile, activeSheet);
+                  }
+                }}
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-2 ${
+                  viewMode === "preview"
+                    ? "bg-slate-800 text-white shadow-sm ring-1 ring-slate-700"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Data Quality Profiling & Charts</span>
+              </button>
+            </div>
+
+            <span className="text-[11px] text-slate-500 font-medium">
+              {viewMode === "mapping"
+                ? "Milestone 2: Configure roles, unpivot wide tables, and map statuses"
+                : "Standard Phase 2 data profiling and recommended widgets"}
+            </span>
+          </div>
+        )}
+
+        {/* Milestone 2: Mapping Workspace View */}
+        {selectedFile && viewMode === "mapping" && (
+          <div className="space-y-6">
+            {/* Milestone 3: Asynchronous Ingestion & Storage Pipeline Card */}
+            {asyncUpload && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="p-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+                      <Database className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <span>Asynchronous Ingestion & Local Storage Pipeline</span>
+                        <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                          Milestone 3
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Private storage under <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">backend/data/storage/</code> • PostgreSQL 16 Metadata • Celery &amp; Redis
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Status badge */}
+                    {asyncUpload.status === "queued" && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                        <Clock className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
+                        <span>Queued</span>
+                      </span>
+                    )}
+                    {asyncUpload.status === "scanning" && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        <RotateCw className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
+                        <span>Scanning in Background</span>
+                      </span>
+                    )}
+                    {asyncUpload.status === "needs_mapping" && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Awaiting Mapping Confirmation</span>
+                      </span>
+                    )}
+                    {asyncUpload.status === "ready" && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>Normalized to Parquet • DuckDB Ready</span>
+                      </span>
+                    )}
+                    {asyncUpload.status === "failed" && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                        <span>Processing Failed</span>
+                      </span>
+                    )}
+
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-mono bg-slate-50 text-slate-600 border border-slate-200">
+                      ID: {asyncUpload.upload_id.slice(0, 8)}...
+                    </span>
+                  </div>
+                </div>
+
+                {/* Progress bar and details */}
+                <div className="px-5 py-4 bg-slate-50/60 border-b border-slate-100 flex flex-col gap-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-slate-700 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
+                      Stage: <span className="text-slate-900 font-semibold">{asyncUpload.stage || asyncUpload.status}</span>
+                    </span>
+                    <span className="font-semibold text-slate-700">{asyncUpload.progress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-indigo-600 h-1.5 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${Math.max(5, asyncUpload.progress)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Error Banner & Retry Control */}
+                {asyncUpload.status === "failed" && (
+                  <div className="p-4 bg-rose-50/70 border-b border-rose-100 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs text-rose-700">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>{asyncUpload.error_message || "An unexpected error occurred during background ingestion."}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRetryAsync}
+                      disabled={isRetrying}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 transition-all shadow-sm"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? "animate-spin" : ""}`} />
+                      <span>{isRetrying ? "Retrying..." : "Retry Processing"}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Detected Datasets Catalog */}
+                {detectedDatasets.length > 0 && (
+                  <div className="p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Discovered Data Blocks &amp; Parquet Tables ({detectedDatasets.length})</span>
+                      </h4>
+                      <span className="text-[11px] text-slate-500">
+                        Persisted in PostgreSQL &amp; ready for DuckDB analytical queries
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {detectedDatasets.map((ds) => (
+                        <div
+                          key={ds.dataset_id}
+                          className="p-3.5 rounded-lg border border-slate-200 bg-white hover:border-indigo-300 transition-all space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-900 font-mono">
+                              {ds.sheet_name}!{ds.cell_range}
+                            </span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase">
+                              {ds.kind}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs text-slate-500">
+                            <span>
+                              {ds.row_count} rows × {ds.column_count} columns
+                            </span>
+                            {ds.parquet_storage_key ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                <FileCode className="w-3 h-3 text-emerald-600" />
+                                <span>Parquet Persisted</span>
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">
+                                Raw Metadata
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {isScanning && !scanResult && (
+              <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-sm flex flex-col items-center justify-center space-y-4 text-center">
+                <div className="w-12 h-12 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Scanning Workbook Structure...
+                  </h3>
+                  <p className="text-xs text-slate-500 max-w-sm">
+                    Detecting table blocks, multi-month unpivot opportunities, cell fill colors, and summary boundaries.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {scanResult && (
+              <WorkbookMappingWorkspace
+                scanResult={scanResult}
+                rawFile={selectedFile}
+                apiBaseUrl={API_BASE_URL}
+                getAccessToken={getAccessToken}
+                onMappingApplied={handleMappingApplied}
+              />
+            )}
+          </div>
+        )}
+
+        {/* ================================================================= */}
+        {/* Loaded Dataset Section (Standard Profiling Steps 2, 3, 4)         */}
+        {/* ================================================================= */}
+        {previewData && !isLoading && viewMode === "preview" && (
           <div className="space-y-8 animate-in fade-in duration-300">
             {/* ------------------------------------------------------------- */}
             {/* STEP 2: Worksheet Selector (Excel multi-sheet only)            */}

@@ -19,435 +19,427 @@ import {
   Lock,
   Search,
   Sparkles,
+  Download,
+  Copy,
+  Edit2,
+  Check,
+  X,
 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { EmptyState } from "@/components/EmptyState";
+import { ExportModal } from "@/components/ExportModal";
 import { useAuth } from "@/context/AuthContext";
 import { useDashboard } from "@/context/DashboardContext";
-import { createClient } from "@/lib/supabase/client";
+import { apiFetch } from "@/lib/api";
 
-interface ReportItem {
+interface SavedDashboardItem {
   id: string;
-  name: string;
-  workspace_id: string;
-  dataset_id: string;
-  chart_configs: any[];
-  filter_config: Record<string, any>;
+  upload_id: string;
+  title: string;
+  template_id?: string | null;
+  source_filename?: string;
   created_at: string;
   updated_at: string;
-  datasets?: {
-    id: string;
-    original_filename: string;
-    file_size_bytes: number;
-    selected_sheet?: string | null;
-    storage_path: string;
-  } | null;
 }
 
 export default function ReportsPage() {
   const router = useRouter();
-  const { user, workspace, role, isConfigured, isLoading: authLoading } = useAuth();
-  const { openReportById, isGenerating } = useDashboard();
+  const { user, workspace, role } = useAuth();
+  const { openManufacturingDashboardById, isGenerating } = useDashboard();
 
-  const [reports, setReports] = useState<ReportItem[]>([]);
-  const [isLoadingReports, setIsLoadingReports] = useState(false);
+  const [reports, setReports] = useState<SavedDashboardItem[]>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(true);
   const [loadingReportId, setLoadingReportId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Modals state
+  const [deleteTarget, setDeleteTarget] = useState<SavedDashboardItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const [renameTarget, setRenameTarget] = useState<SavedDashboardItem | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
+
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  const [exportTarget, setExportTarget] = useState<SavedDashboardItem | null>(null);
+
+  const isViewer = role === "viewer";
+
   const fetchReports = useCallback(async () => {
-    if (!isConfigured || !user || !workspace) {
-      setIsLoadingReports(false);
-      return;
-    }
-
-    const supabase = createClient();
-    if (!supabase) {
-      setIsLoadingReports(false);
-      return;
-    }
-
     try {
       setIsLoadingReports(true);
       setActionError(null);
-
-      const { data, error } = await supabase
-        .from("reports")
-        .select(`
-          id,
-          name,
-          workspace_id,
-          dataset_id,
-          chart_configs,
-          filter_config,
-          created_at,
-          updated_at,
-          datasets (
-            id,
-            original_filename,
-            file_size_bytes,
-            selected_sheet,
-            storage_path
-          )
-        `)
-        .eq("workspace_id", workspace.id)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        throw error;
+      const res = await apiFetch("/api/dashboards");
+      if (!res.ok) {
+        throw new Error(`Failed to load saved reports (${res.status})`);
       }
-
-      setReports((data as unknown as ReportItem[]) || []);
+      const data: SavedDashboardItem[] = await res.json();
+      setReports(data || []);
     } catch (err: any) {
-      setActionError(err?.message || "Failed to load saved reports.");
+      setActionError(err.message || "Failed to load saved reports.");
     } finally {
       setIsLoadingReports(false);
     }
-  }, [isConfigured, user, workspace]);
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    if (authLoading || !isConfigured || !user || !workspace) {
-      return;
-    }
-
+    let active = true;
     const load = async () => {
-      await Promise.resolve();
-      if (cancelled) return;
-
-      const supabase = createClient();
-      if (!supabase) return;
-
-      setIsLoadingReports(true);
       try {
-        const { data, error } = await supabase
-          .from("reports")
-          .select(`
-            id,
-            name,
-            workspace_id,
-            dataset_id,
-            chart_configs,
-            filter_config,
-            created_at,
-            updated_at,
-            datasets (
-              id,
-              original_filename,
-              file_size_bytes,
-              selected_sheet,
-              storage_path
-            )
-          `)
-          .eq("workspace_id", workspace.id)
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-        if (!cancelled) {
-          setReports((data as unknown as ReportItem[]) || []);
+        const res = await apiFetch("/api/dashboards");
+        if (!res.ok) throw new Error(`Failed to load saved reports (${res.status})`);
+        const data: SavedDashboardItem[] = await res.json();
+        if (active) {
+          setReports(data || []);
+          setIsLoadingReports(false);
         }
       } catch (err: any) {
-        if (!cancelled) {
-          setActionError(err?.message || "Failed to load saved reports.");
-        }
-      } finally {
-        if (!cancelled) {
+        if (active) {
+          setActionError(err.message || "Failed to load saved reports.");
           setIsLoadingReports(false);
         }
       }
     };
-
     load();
-
     return () => {
-      cancelled = true;
+      active = false;
     };
-  }, [authLoading, isConfigured, user, workspace]);
+  }, []);
 
-  // Open saved report: download file from storage, recompute dashboard via FastAPI
+  // Open report action
   const handleOpenReport = async (reportId: string) => {
-    setActionError(null);
     setLoadingReportId(reportId);
+    setActionError(null);
     try {
-      const res = await openReportById(reportId);
-      if (res.success) {
+      const ok = await openManufacturingDashboardById(reportId);
+      if (ok) {
         router.push("/dashboard");
       } else {
-        setActionError(res.error || "Failed to open report.");
+        setActionError("Failed to recalculate and open saved dashboard.");
       }
     } catch (err: any) {
-      setActionError(err?.message || "Failed to reconstruct report dashboard.");
+      setActionError(err.message || "Could not open saved dashboard.");
     } finally {
       setLoadingReportId(null);
     }
   };
 
-  // Confirm delete report
-  const handleDeleteReport = async () => {
-    if (!deleteTargetId || !workspace) return;
+  // Rename report action
+  const handleRenameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!renameTarget || !renameTitle.trim()) return;
 
-    const supabase = createClient();
-    if (!supabase) return;
-
+    setIsRenaming(true);
+    setActionError(null);
     try {
-      setIsDeleting(true);
-      setActionError(null);
-
-      const { error } = await supabase
-        .from("reports")
-        .delete()
-        .eq("id", deleteTargetId)
-        .eq("workspace_id", workspace.id);
-
-      if (error) {
-        throw error;
+      const res = await apiFetch(`/api/dashboards/${renameTarget.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: renameTitle.trim() }),
+      });
+      if (!res.ok) {
+        let msg = `Rename failed (${res.status})`;
+        try {
+          const d = await res.json();
+          if (d.detail) msg = d.detail;
+        } catch {}
+        throw new Error(msg);
       }
-
-      setReports((prev) => prev.filter((r) => r.id !== deleteTargetId));
-      setDeleteTargetId(null);
+      setActionSuccess(`Report renamed to "${renameTitle.trim()}".`);
+      setRenameTarget(null);
+      await fetchReports();
     } catch (err: any) {
-      setActionError(err?.message || "Failed to delete report.");
+      setActionError(err.message || "Failed to rename report.");
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  // Duplicate report action
+  const handleDuplicate = async (report: SavedDashboardItem) => {
+    if (isViewer) return;
+    setDuplicatingId(report.id);
+    setActionError(null);
+    try {
+      const res = await apiFetch(`/api/dashboards/${report.id}/duplicate`, {
+        method: "POST",
+        body: JSON.stringify({ title: `Copy of ${report.title}` }),
+      });
+      if (!res.ok) {
+        let msg = `Duplicate failed (${res.status})`;
+        try {
+          const d = await res.json();
+          if (d.detail) msg = d.detail;
+        } catch {}
+        throw new Error(msg);
+      }
+      setActionSuccess(`Duplicated report configuration "${report.title}".`);
+      await fetchReports();
+    } catch (err: any) {
+      setActionError(err.message || "Failed to duplicate report.");
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
+
+  // Delete report action
+  const handleDeleteReport = async () => {
+    if (!deleteTarget) return;
+
+    setIsDeleting(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch(`/api/dashboards/${deleteTarget.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        let msg = `Delete failed (${res.status})`;
+        try {
+          const d = await res.json();
+          if (d.detail) msg = d.detail;
+        } catch {}
+        throw new Error(msg);
+      }
+      setActionSuccess(`Report "${deleteTarget.title}" deleted.`);
+      setDeleteTarget(null);
+      await fetchReports();
+    } catch (err: any) {
+      setActionError(err.message || "Failed to delete report.");
     } finally {
       setIsDeleting(false);
     }
   };
 
   const filteredReports = reports.filter((r) => {
-    if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
-    const nameMatch = r.name.toLowerCase().includes(q);
-    const datasetMatch = r.datasets?.original_filename.toLowerCase().includes(q);
-    return nameMatch || Boolean(datasetMatch);
+    const titleMatch = r.title.toLowerCase().includes(q);
+    const fileMatch = r.source_filename?.toLowerCase().includes(q);
+    return titleMatch || fileMatch;
   });
 
   return (
-    <div className="flex flex-col min-h-full">
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-20">
       <Header
         title="Saved Reports"
-        description="Inspect, manage, and recalculate saved business reporting dashboards directly from private workspace storage."
-        actions={
-          <Link
-            href="/upload"
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors focus:ring-2 focus:ring-brand-500 focus:ring-offset-2"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New Report</span>
-          </Link>
-        }
+        description="Local-first business intelligence reports for manufacturing quality tracking."
       />
 
-      <div className="p-6 sm:p-8 space-y-6 max-w-7xl mx-auto w-full">
-        {/* Unconfigured / Guest Notice */}
-        {!isConfigured ? (
-          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold text-sm">Supabase Persistence Not Configured</p>
-              <p className="mt-1 leading-relaxed text-amber-800">
-                To enable persistent saved reports and private storage across browser refreshes, configure your Supabase project URL and keys in <code className="px-1.5 py-0.5 rounded bg-amber-100 font-mono">.env.local</code> and run the migrations in <code className="px-1.5 py-0.5 rounded bg-amber-100 font-mono">supabase/migrations/</code>.
-              </p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-6">
+        {/* Top Header & Actions */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-6">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+                Manufacturing Quality Reports
+              </h1>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-sky-100 text-sky-800 border border-sky-200">
+                Local-First BI
+              </span>
             </div>
+            <p className="text-sm text-slate-500 mt-1">
+              Reopen confirmed dashboards, recalculate from normalized Parquet data, and export verified executive reports.
+            </p>
           </div>
-        ) : !user ? (
-          <div className="p-4 rounded-xl bg-brand-50 border border-brand-200 text-brand-900 text-xs flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-2.5">
-              <Lock className="w-5 h-5 text-brand-600 flex-shrink-0" />
-              <div>
-                <p className="font-bold text-sm">Sign in to Access Saved Reports</p>
-                <p className="text-slate-600 text-xs">
-                  Reports and private dataset files are securely isolated per authenticated workspace.
-                </p>
-              </div>
-            </div>
-            <Link
-              href="/login"
-              className="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-semibold transition-colors shadow-xs"
-            >
-              Sign In to Workspace
-            </Link>
-          </div>
-        ) : null}
 
-        {/* Global Action Error Banner */}
-        {actionError && (
-          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="font-bold">Error Accessing Report</p>
-              <p className="mt-0.5 leading-relaxed">{actionError}</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setActionError(null)}
-              className="text-rose-500 hover:text-rose-700 text-xs font-semibold"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Search & Statistics Filter Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-white rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <div className="relative w-full">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Search by report name or dataset file..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3.5 py-1.5 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500 text-slate-900 bg-slate-50/50"
-              />
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-xs text-slate-500">
-            <span>
-              <strong>{filteredReports.length}</strong> {filteredReports.length === 1 ? "report" : "reports"} in{" "}
-              <strong className="text-slate-800">{workspace?.name || "Workspace"}</strong>
-            </span>
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={fetchReports}
               disabled={isLoadingReports}
-              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 transition-colors"
-              title="Refresh reports"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl shadow-xs transition disabled:opacity-60"
             >
               <RotateCw className={`w-3.5 h-3.5 ${isLoadingReports ? "animate-spin" : ""}`} />
+              Refresh
             </button>
+
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-xl shadow-sm transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              New Report
+            </Link>
           </div>
         </div>
 
-        {/* Loading Skeletons */}
+        {/* Banners & Messages */}
+        {actionError && (
+          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 text-xs text-rose-800 font-medium">
+              {actionError}
+            </div>
+            <button
+              onClick={() => setActionError(null)}
+              className="text-rose-400 hover:text-rose-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {actionSuccess && (
+          <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3">
+            <Check className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 text-xs text-emerald-800 font-medium">
+              {actionSuccess}
+            </div>
+            <button
+              onClick={() => setActionSuccess(null)}
+              className="text-emerald-400 hover:text-emerald-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Search & Stats Bar */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search reports or files..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 shadow-xs"
+            />
+          </div>
+
+          <div className="text-xs text-slate-500 self-end sm:self-center font-medium">
+            Showing {filteredReports.length} of {reports.length} saved reports
+          </div>
+        </div>
+
+        {/* Reports Grid */}
         {isLoadingReports ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {[1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="p-5 bg-white rounded-xl border border-slate-200 shadow-xs space-y-4 animate-pulse"
-              >
-                <div className="h-5 bg-slate-200 rounded w-2/3" />
-                <div className="h-4 bg-slate-100 rounded w-1/2" />
-                <div className="h-8 bg-slate-100 rounded" />
-              </div>
-            ))}
+          <div className="py-20 flex flex-col items-center justify-center space-y-3">
+            <RotateCw className="w-6 h-6 text-sky-600 animate-spin" />
+            <p className="text-xs font-semibold text-slate-500">
+              Loading saved reports from PostgreSQL...
+            </p>
           </div>
         ) : filteredReports.length === 0 ? (
           <EmptyState
-            icon={FileText}
-            title={reports.length === 0 ? "No saved reports in this workspace" : "No matching reports found"}
+            icon={FileSpreadsheet}
+            title={searchQuery ? "No matching reports found" : "No saved reports yet"}
             description={
-              reports.length === 0
-                ? "Saved reports will appear here once you upload an Excel or CSV file, generate a dashboard, and click Save Report."
-                : `No reports matched your search term "${searchQuery}".`
+              searchQuery
+                ? `No reports matched your query "${searchQuery}". Clear search to see all.`
+                : "You haven't saved any quality reports in this workspace yet. Upload an Excel workbook to build and save your first dashboard."
             }
             action={
-              <Link
-                href="/upload"
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
+              <button
+                type="button"
+                onClick={() => router.push("/upload")}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-xl shadow-xs transition"
               >
-                <UploadCloud className="w-4 h-4" />
-                <span>Upload a Dataset to Build a Report</span>
-              </Link>
+                Go to Upload
+              </button>
             }
           />
         ) : (
-          /* Reports Grid */
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {filteredReports.map((report) => {
               const isOpening = loadingReportId === report.id;
-              const chartCount = Array.isArray(report.chart_configs) ? report.chart_configs.length : 0;
-              const hasFilters = Boolean(
-                report.filter_config &&
-                  (report.filter_config.start_date ||
-                    report.filter_config.category_values?.length > 0)
-              );
-              const isSourceMissing = !report.datasets;
+              const isDuplicating = duplicatingId === report.id;
 
               return (
                 <div
                   key={report.id}
-                  className="bg-white rounded-xl border border-slate-200 shadow-sm hover:border-slate-300 transition-all flex flex-col justify-between overflow-hidden"
+                  className="bg-white border border-slate-200 rounded-2xl shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden group"
                 >
+                  {/* Card Header */}
                   <div className="p-5 space-y-3">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600 flex-shrink-0">
-                          <FileText className="w-4 h-4" />
+                      <div className="flex-1 min-w-0">
+                        <h2 className="text-base font-bold text-slate-900 truncate group-hover:text-sky-600 transition-colors">
+                          {report.title}
+                        </h2>
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-1 truncate">
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                          <span className="truncate">{report.source_filename || "Workbook.xlsx"}</span>
                         </div>
-                        <h3 className="font-bold text-slate-900 text-sm tracking-tight line-clamp-1" title={report.name}>
-                          {report.name}
-                        </h3>
                       </div>
-                      {role !== "viewer" && (
+
+                      {/* Top Action Menu for Edit/Duplicate/Delete */}
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => setDeleteTargetId(report.id)}
-                          className="text-slate-400 hover:text-rose-600 p-1 rounded-lg transition-colors"
-                          title="Delete report"
+                          title={isViewer ? "Editing requires Editor role" : "Rename Report"}
+                          disabled={isViewer}
+                          onClick={() => {
+                            setRenameTarget(report);
+                            setRenameTitle(report.title);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40 rounded-lg hover:bg-slate-100 transition"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Edit2 className="w-3.5 h-3.5" />
                         </button>
-                      )}
-                    </div>
 
-                    {/* Dataset details */}
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex items-center gap-1.5 text-xs text-slate-600">
-                        <FileSpreadsheet className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-                        <span className="truncate font-medium">
-                          {report.datasets?.original_filename || (
-                            <span className="text-amber-600 italic">Source file missing</span>
+                        <button
+                          type="button"
+                          title={isViewer ? "Duplicating requires Editor role" : "Duplicate Report"}
+                          disabled={isViewer || isDuplicating}
+                          onClick={() => handleDuplicate(report)}
+                          className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40 rounded-lg hover:bg-slate-100 transition"
+                        >
+                          {isDuplicating ? (
+                            <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
                           )}
-                        </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          title={isViewer ? "Deleting requires Editor role" : "Delete Report"}
+                          disabled={isViewer}
+                          onClick={() => setDeleteTarget(report)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 disabled:opacity-40 rounded-lg hover:bg-rose-50 transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                      {report.datasets?.selected_sheet && (
-                        <p className="text-[11px] text-slate-500 pl-5">
-                          Sheet: {report.datasets.selected_sheet}
-                        </p>
-                      )}
                     </div>
 
-                    {/* Metadata Badges */}
-                    <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-slate-100">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700">
-                        <BarChart3 className="w-3 h-3 text-slate-500" />
-                        <span>{chartCount} {chartCount === 1 ? "chart" : "charts"}</span>
-                      </span>
-
-                      {hasFilters && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                          <Filter className="w-3 h-3 text-amber-500" />
-                          <span>Filtered</span>
-                        </span>
-                      )}
-
-                      <span className="text-[11px] text-slate-400 ml-auto">
+                    {/* Metadata Timestamps */}
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
                         {new Date(report.created_at).toLocaleDateString(undefined, {
                           month: "short",
                           day: "numeric",
                           year: "numeric",
                         })}
                       </span>
+                      <span>Parquet Normalized</span>
                     </div>
                   </div>
 
-                  {/* Card Action Footer */}
-                  <div className="p-3 bg-slate-50/70 border-t border-slate-100 flex items-center justify-between">
-                    <span className="text-[11px] text-slate-500">
-                      Private storage source
-                    </span>
+                  {/* Card Action Buttons Footer */}
+                  <div className="p-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExportTarget(report)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg shadow-xs transition"
+                    >
+                      <Download className="w-3.5 h-3.5 text-sky-600" />
+                      <span>Export</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => handleOpenReport(report.id)}
                       disabled={isOpening || isGenerating}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-xs transition-colors disabled:opacity-60"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-lg shadow-xs transition disabled:opacity-60"
                     >
                       {isOpening ? (
                         <>
                           <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>Recomputing...</span>
+                          <span>Recalculating...</span>
                         </>
                       ) : (
                         <>
@@ -463,14 +455,67 @@ export default function ReportsPage() {
           </div>
         )}
 
+        {/* Rename Modal */}
+        {renameTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Edit2 className="w-4 h-4 text-sky-600" />
+                  Rename Saved Report
+                </h3>
+                <button
+                  onClick={() => setRenameTarget(null)}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleRenameSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Report Title
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={renameTitle}
+                    onChange={(e) => setRenameTitle(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setRenameTarget(null)}
+                    disabled={isRenaming}
+                    className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isRenaming || !renameTitle.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 rounded-lg shadow-xs disabled:opacity-50"
+                  >
+                    {isRenaming ? (
+                      <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <span>Save Changes</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {/* Delete Confirmation Modal */}
-        {deleteTargetId && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in"
-          >
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4 animate-in zoom-in-95">
+        {deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 space-y-4">
               <div className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 mx-auto">
                 <Trash2 className="w-5 h-5" />
               </div>
@@ -479,14 +524,15 @@ export default function ReportsPage() {
                   Delete Saved Report?
                 </h3>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  This will permanently remove the saved report configuration from your workspace. The underlying dataset file will remain in private storage if referenced by other reports.
+                  This will remove the saved report specification &quot;{deleteTarget.title}&quot;.
+                  Shared source datasets and Parquet files referenced by other reports will remain intact.
                 </p>
               </div>
 
               <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setDeleteTargetId(null)}
+                  onClick={() => setDeleteTarget(null)}
                   disabled={isDeleting}
                   className="w-full px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-300"
                 >
@@ -496,17 +542,28 @@ export default function ReportsPage() {
                   type="button"
                   onClick={handleDeleteReport}
                   disabled={isDeleting}
-                  className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm"
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm disabled:opacity-50"
                 >
                   {isDeleting ? (
                     <RotateCw className="w-3.5 h-3.5 animate-spin" />
                   ) : (
-                    <span>Delete Report</span>
+                    <span>Confirm Delete</span>
                   )}
                 </button>
               </div>
             </div>
           </div>
+        )}
+
+        {/* Export Modal */}
+        {exportTarget && (
+          <ExportModal
+            isOpen={true}
+            onClose={() => setExportTarget(null)}
+            dashboardId={exportTarget.id}
+            dashboardTitle={exportTarget.title}
+            userRole={role || "viewer"}
+          />
         )}
       </div>
     </div>

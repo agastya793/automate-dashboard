@@ -1,0 +1,17 @@
+services:
+  postgres:
+    container_name: reporting_dashboard_postgres
+    ports: !override
+      - "127.0.0.1:15433:5432"
+
+  redis:
+    container_name: reporting_dashboard_redis
+    ports: !override []
+
+  api:
+    container_name: reporting_dashboard_api
+    ports: !override
+      - "127.0.0.1:18001:8000"
+
+  worker:
+    container_name: reporting_dashboard_worker

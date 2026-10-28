@@ -1,0 +1,12 @@
+{
+  "id": "api-del-5d3ba111",
+  "name": "To Delete",
+  "description": null,
+  "version": 1,
+  "created_at": "2026-10-25T08:10:38.132690+00:00",
+  "updated_at": "2026-10-25T08:10:38.132760+00:00",
+  "filename_pattern": null,
+  "blocks": [],
+  "source_of_truth": null,
+  "global_warnings_acknowledged": false
+}

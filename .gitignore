@@ -66,3 +66,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.log
+
+# Milestone 3: Private Storage & Local Databases
+backend/data/storage/
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+postgres_data/
+redis_data/
+

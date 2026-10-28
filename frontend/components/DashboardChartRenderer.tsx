@@ -66,7 +66,7 @@ function ChartIcon({ chartType }: { chartType: string }) {
 }
 
 export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
-  const hasData = chart.data_points && chart.data_points.length > 0;
+  const hasData = chart.data && chart.data.length > 0;
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between hover:border-slate-300 transition-colors">
@@ -96,9 +96,9 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
         </div>
 
         {/* Axis or Configuration hint */}
-        {chart.y_axis_label && (
+        {chart.config.measure_column && (
           <p className="text-[11px] text-slate-600 mb-4 font-mono font-medium">
-            Measure: {chart.y_axis_label}
+            Measure: {chart.config.measure_column}
           </p>
         )}
       </div>
@@ -116,10 +116,10 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
         ) : chart.chart_type === "line" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chart.data_points} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+              <LineChart data={chart.data} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis
-                  dataKey={chart.x_axis_key}
+                  dataKey="label"
                   stroke="#94a3b8"
                   fontSize={11}
                   tickLine={false}
@@ -135,7 +135,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 <Tooltip
                   formatter={(value: any) => [
                     typeof value === "number" ? value.toLocaleString() : value,
-                    chart.y_axis_label || "Value",
+                    chart.config.measure_column || "Value",
                   ]}
                   contentStyle={{
                     backgroundColor: "#ffffff",
@@ -147,12 +147,12 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
                 <Line
                   type="monotone"
-                  dataKey={chart.y_axis_key || "value"}
+                  dataKey="value"
                   stroke="#2563eb"
                   strokeWidth={2.5}
                   dot={{ r: 3, fill: "#2563eb" }}
                   activeDot={{ r: 6 }}
-                  name={chart.y_axis_label || "Value"}
+                  name={chart.config.measure_column || "Value"}
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -160,17 +160,17 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
         ) : chart.chart_type === "bar" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chart.data_points} margin={{ top: 10, right: 20, left: 0, bottom: 25 }}>
+              <BarChart data={chart.data} margin={{ top: 10, right: 20, left: 0, bottom: 25 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis
-                  dataKey={chart.x_axis_key}
+                  dataKey="label"
                   stroke="#94a3b8"
                   fontSize={11}
                   tickLine={false}
                   interval={0}
-                  angle={chart.data_points.length > 5 ? -25 : 0}
-                  textAnchor={chart.data_points.length > 5 ? "end" : "middle"}
-                  dy={chart.data_points.length > 5 ? 8 : 4}
+                  angle={chart.data.length > 5 ? -25 : 0}
+                  textAnchor={chart.data.length > 5 ? "end" : "middle"}
+                  dy={chart.data.length > 5 ? 8 : 4}
                 />
                 <YAxis
                   stroke="#94a3b8"
@@ -182,7 +182,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 <Tooltip
                   formatter={(value: any) => [
                     typeof value === "number" ? value.toLocaleString() : value,
-                    chart.y_axis_label || "Value",
+                    chart.config.measure_column || "Value",
                   ]}
                   contentStyle={{
                     backgroundColor: "#ffffff",
@@ -192,20 +192,20 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                   }}
                 />
                 <Bar
-                  dataKey={chart.y_axis_key || "value"}
+                  dataKey="value"
                   fill="#059669"
                   radius={[4, 4, 0, 0]}
-                  name={chart.y_axis_label || "Value"}
+                  name={chart.config.measure_column || "Value"}
                 />
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : chart.chart_type === "ranked_bar" ? (
-          <div className="w-full" style={{ height: Math.max(288, chart.data_points.length * 32) }}>
+          <div className="w-full" style={{ height: Math.max(288, chart.data.length * 32) }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
                 layout="vertical"
-                data={chart.data_points}
+                data={chart.data}
                 margin={{ top: 10, right: 20, left: 20, bottom: 10 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
@@ -218,7 +218,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 />
                 <YAxis
                   type="category"
-                  dataKey={chart.x_axis_key}
+                  dataKey="label"
                   stroke="#64748b"
                   fontSize={11}
                   tickLine={false}
@@ -227,7 +227,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 <Tooltip
                   formatter={(value: any) => [
                     typeof value === "number" ? value.toLocaleString() : value,
-                    chart.y_axis_label || "Value",
+                    chart.config.measure_column || "Value",
                   ]}
                   contentStyle={{
                     backgroundColor: "#ffffff",
@@ -237,10 +237,10 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                   }}
                 />
                 <Bar
-                  dataKey={chart.y_axis_key || "value"}
+                  dataKey="value"
                   fill="#0d9488"
                   radius={[0, 4, 4, 0]}
-                  name={chart.y_axis_label || "Value"}
+                  name={chart.config.measure_column || "Value"}
                 />
               </BarChart>
             </ResponsiveContainer>
@@ -264,16 +264,16 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                 />
                 <Legend wrapperStyle={{ fontSize: "11px" }} />
                 <Pie
-                  data={chart.data_points}
-                  dataKey={chart.y_axis_key || "value"}
-                  nameKey={chart.x_axis_key}
+                  data={chart.data}
+                  dataKey="value"
+                  nameKey="label"
                   cx="50%"
                   cy="50%"
                   innerRadius={65}
                   outerRadius={95}
                   paddingAngle={2}
                 >
-                  {chart.data_points.map((_, idx) => (
+                  {chart.data.map((_, idx) => (
                     <Cell key={`donut-cell-${idx}`} fill={PALETTE[idx % PALETTE.length]} />
                   ))}
                 </Pie>
@@ -283,10 +283,10 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
         ) : chart.chart_type === "histogram" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chart.data_points} margin={{ top: 10, right: 20, left: 0, bottom: 35 }}>
+              <BarChart data={chart.data} margin={{ top: 10, right: 20, left: 0, bottom: 35 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis
-                  dataKey={chart.x_axis_key}
+                  dataKey="label"
                   stroke="#94a3b8"
                   fontSize={10}
                   tickLine={false}
@@ -312,7 +312,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                   }}
                 />
                 <Bar
-                  dataKey={chart.y_axis_key || "count"}
+                  dataKey="value"
                   fill="#d97706"
                   radius={[3, 3, 0, 0]}
                   name="Record Frequency"
@@ -323,10 +323,10 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
         ) : chart.chart_type === "stacked_bar" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chart.data_points} margin={{ top: 10, right: 20, left: 0, bottom: 25 }}>
+              <BarChart data={chart.data} margin={{ top: 10, right: 20, left: 0, bottom: 25 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis
-                  dataKey={chart.x_axis_key}
+                  dataKey="label"
                   stroke="#94a3b8"
                   fontSize={11}
                   tickLine={false}
@@ -348,7 +348,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                   }}
                 />
                 <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
-                {chart.series_keys.map((seriesKey, idx) => (
+                {(chart.series_keys || []).map((seriesKey, idx) => (
                   <Bar
                     key={seriesKey}
                     dataKey={seriesKey}
@@ -364,13 +364,11 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
       </div>
 
       {/* Card Footer Warnings / Exclusions */}
-      {(chart.excluded_missing_count > 0 || chart.warnings.length > 0) && (
+      {chart.warnings.length > 0 && (
         <div className="mt-3 pt-2 border-t border-slate-100 flex items-center gap-1.5 text-[11px] text-amber-700 bg-amber-50/70 p-2 rounded">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-amber-600" />
           <span>
-            {chart.excluded_missing_count > 0
-              ? `${chart.excluded_missing_count} rows with missing or non-numeric values excluded from aggregation.`
-              : chart.warnings.join(" ")}
+            {chart.warnings.join(" ")}
           </span>
         </div>
       )}

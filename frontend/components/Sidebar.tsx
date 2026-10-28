@@ -33,7 +33,7 @@ export const navigationItems: NavItem[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { user, profile, workspace, role, signOut } = useAuth();
+  const { user, profile, workspace, workspaces, role, signOut, switchWorkspace } = useAuth();
 
   return (
     <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-white border-r border-slate-200 z-30">
@@ -96,7 +96,7 @@ export function Sidebar() {
       {/* Account / Authentication Footer */}
       <div className="p-3.5 border-t border-slate-200 bg-slate-50/70">
         {user ? (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <div className="flex items-center gap-2.5 px-1">
               <div className="w-8 h-8 rounded-full bg-brand-100 border border-brand-200 text-brand-700 flex items-center justify-center font-bold text-xs flex-shrink-0">
                 {profile?.display_name?.charAt(0).toUpperCase() ||
@@ -107,13 +107,38 @@ export function Sidebar() {
                 <span className="text-xs font-bold text-slate-900 truncate">
                   {profile?.display_name || user.email?.split("@")[0]}
                 </span>
-                <span className="text-[10px] text-slate-500 truncate">
-                  {workspace
-                    ? `${workspace.name} (${role || "owner"})`
-                    : user.email}
-                </span>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="text-[10px] bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded font-medium capitalize">
+                    {role || "viewer"}
+                  </span>
+                </div>
               </div>
             </div>
+
+            {/* Workspace selection if user belongs to workspaces */}
+            {workspaces && workspaces.length > 1 ? (
+              <div className="px-1">
+                <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                  Active Workspace
+                </label>
+                <select
+                  value={workspace?.id || ""}
+                  onChange={(e) => switchWorkspace(e.target.value)}
+                  className="w-full text-xs bg-white border border-slate-200 rounded-md px-2 py-1 text-slate-800 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                >
+                  {workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : workspace ? (
+              <div className="px-1 text-[11px] text-slate-500 font-medium truncate">
+                🏢 {workspace.name}
+              </div>
+            ) : null}
+
             <button
               type="button"
               onClick={() => signOut()}

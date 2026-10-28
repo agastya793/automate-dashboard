@@ -31,8 +31,8 @@ function SignUpForm() {
       return;
     }
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters long and contain both letters and numbers/special characters.");
       return;
     }
 
@@ -46,11 +46,6 @@ function SignUpForm() {
       const res = await signUpWithEmail(email.trim(), password, displayName.trim());
       if (res.error) {
         setError(res.error);
-      } else if (!res.userConfirmed) {
-        // Email confirmation is required by Supabase auth configuration
-        setSuccessNotice(
-          "Account registered! Please check your email inbox to verify your address before signing in."
-        );
       } else {
         router.push(redirectTo);
       }
@@ -76,20 +71,6 @@ function SignUpForm() {
             Sign up to persist reports, manage private datasets, and collaborate in workspaces.
           </p>
         </div>
-
-        {/* Unconfigured Supabase Banner */}
-        {!isConfigured && (
-          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2">
-            <div className="flex items-center gap-2 font-bold text-amber-800">
-              <Info className="w-4 h-4 flex-shrink-0" />
-              <span>Supabase Project Not Configured</span>
-            </div>
-            <p className="text-[11px] leading-relaxed text-amber-800/90">
-              To enable signups, provide your Supabase URL and anon key in{" "}
-              <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">frontend/.env.local</code>.
-            </p>
-          </div>
-        )}
 
         {/* Error Alert */}
         {error && (
@@ -202,7 +183,7 @@ function SignUpForm() {
 
               <button
                 type="submit"
-                disabled={isSubmitting || !isConfigured}
+                disabled={isSubmitting}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 rounded-lg transition-colors shadow-sm cursor-pointer disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (
