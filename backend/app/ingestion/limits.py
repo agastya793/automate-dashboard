@@ -36,7 +36,7 @@ MAX_SHEETS: int = _int_env("INGEST_MAX_SHEETS", 50)
 
 # Maximum expanded bytes for the XLSX ZIP archive (zip-bomb guard).
 XLSX_MAX_EXPANDED_BYTES: int = _int_env(
-    "INGEST_XLSX_MAX_EXPANDED_BYTES", 50 * 1024 * 1024
+    "INGEST_XLSX_MAX_EXPANDED_BYTES", 200 * 1024 * 1024
 )
 
 # Maximum ZIP archive entries (zip-bomb guard).

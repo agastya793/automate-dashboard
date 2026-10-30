@@ -19,6 +19,7 @@ from typing import Any
 import pandas as pd
 from pandas import DataFrame
 
+from app.ingestion.bounds import SheetBounds, detect_all_sheet_bounds
 from app.recommender import recommend_charts
 
 
@@ -33,7 +34,7 @@ MAX_PREVIEW_ROWS: int = 20
 
 # Guard against zip-bomb style XLSX archives
 XLSX_MAX_ARCHIVE_ENTRIES: int = 1_000
-XLSX_MAX_EXPANDED_BYTES: int = 50 * 1024 * 1024  # 50 MB expanded
+XLSX_MAX_EXPANDED_BYTES: int = 200 * 1024 * 1024  # 200 MB expanded
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +116,11 @@ def _load_xlsx(
     """
     Return (sheet_names, selected_sheet_name, dataframe).
     Uses openpyxl's read_only / data_only modes — never evaluates macros.
+    Applies bounds detection to guard against bloated accidental ghost-row fill-downs.
     """
     _validate_xlsx_archive(raw)
+
+    sheet_bounds_map = detect_all_sheet_bounds(raw)
 
     try:
         xl = pd.ExcelFile(io.BytesIO(raw), engine="openpyxl")
@@ -143,17 +147,25 @@ def _load_xlsx(
     else:
         selected = sheet_names[0]
 
+    bounds = sheet_bounds_map.get(selected)
+    parse_kwargs: dict[str, Any] = {"engine": "openpyxl"}
+    if bounds and bounds.has_ghost_tail:
+        parse_kwargs["nrows"] = bounds.effective_data_max_row
+
     try:
         # Read with data_only=True so formula cells yield their last saved value
         # (or NaN).  We never execute formulas.
         df: DataFrame = xl.parse(
             selected,
-            engine="openpyxl",
+            **parse_kwargs,
         )
     except Exception as exc:
         raise MalformedFileError(
             f"Failed to parse worksheet '{selected}': {exc}"
         ) from exc
+
+    if bounds:
+        df.attrs["sheet_bounds"] = bounds
 
     return sheet_names, selected, df
 
@@ -375,6 +387,12 @@ def _build_warnings(
 ) -> list[str]:
     """Produce plain-language data-quality warnings."""
     warnings: list[str] = []
+
+    # Sheet bounds / ghost tail warning
+    bounds = getattr(df, "attrs", {}).get("sheet_bounds")
+    if bounds and getattr(bounds, "has_ghost_tail", False) and getattr(bounds, "warning_message", None):
+        warnings.append(bounds.warning_message)
+
     total = len(df)
 
     # Duplicate rows
@@ -577,6 +595,7 @@ def profile_dataset(
     warnings = _build_warnings(df, column_profiles)
     preview_rows = _make_preview_rows(df, max_preview_rows)
     recommendations = recommend_charts(df, column_profiles)
+    bounds = getattr(df, "attrs", {}).get("sheet_bounds")
 
     return {
         "filename": filename,
@@ -598,4 +617,6 @@ def profile_dataset(
         "preview_rows": preview_rows,
         "warnings": warnings,
         "chart_recommendations": recommendations,
+        "bounds": bounds.to_dict() if bounds else None,
+        "sheet_bounds": bounds.to_dict() if bounds else None,
     }

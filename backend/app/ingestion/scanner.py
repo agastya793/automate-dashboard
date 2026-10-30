@@ -49,6 +49,11 @@ from app.ingestion.limits import (
     XLSX_MAX_ARCHIVE_ENTRIES,
     XLSX_MAX_EXPANDED_BYTES,
 )
+from app.ingestion.bounds import (
+    SheetBounds,
+    detect_all_sheet_bounds,
+    detect_openpyxl_sheet_bounds,
+)
 
 # ---------------------------------------------------------------------------
 # Month lookup (3-letter abbreviations → 1-based month number)
@@ -121,6 +126,9 @@ class BlockResult:
     header_row_index: int = 0   # 0-based index of the header row within the block
     formula_cache_warning: bool = False
     cap_reached: bool = False    # True if a row/cell/col limit was hit
+    physical_max_row: int | None = None
+    effective_data_max_row: int | None = None
+    ignored_trailing_rows: int = 0
 
     @property
     def range(self) -> str:
@@ -186,6 +194,11 @@ class BlockResult:
                 for c in self.cell_colours
             ],
             "has_summary": self.summary_df is not None and len(self.summary_df) > 0,
+            "bounds": {
+                "physical_max_row": self.physical_max_row,
+                "effective_data_max_row": self.effective_data_max_row,
+                "ignored_trailing_rows": self.ignored_trailing_rows,
+            } if self.physical_max_row is not None else None,
         }
 
 
@@ -197,6 +210,7 @@ class ScanResult:
     blocks: list[BlockResult] = field(default_factory=list)
     global_warnings: list[str] = field(default_factory=list)
     cap_reached: bool = False
+    sheet_bounds: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +219,7 @@ class ScanResult:
             "block_count": len(self.blocks),
             "cap_reached": self.cap_reached,
             "global_warnings": self.global_warnings,
+            "sheet_bounds": self.sheet_bounds,
             "blocks": [b.to_scan_dict() for b in self.blocks],
         }
 
@@ -334,6 +349,7 @@ def guess_year(sheet: str, filename: str = "") -> int | None:
 def _read_grid_data_only(
     ws: Any,
     global_warnings: list[str],
+    max_row_limit: int | None = None,
 ) -> tuple[list[list[Any]], bool]:
     """
     Read cached cell values from one worksheet using data_only=True.
@@ -342,20 +358,24 @@ def _read_grid_data_only(
     grid[r][c] is None for empty/whitespace-only strings.
     Rows beyond MAX_SCAN_ROWS and cols beyond MAX_SCAN_COLS are silently
     truncated with cap_reached=True set so the caller can warn the user.
+    If max_row_limit is provided, bounds the scan to that effective row boundary.
     """
     rows: list[list[Any]] = []
     last_r = -1
     last_c = -1
     cap_reached = False
 
-    for i, row in enumerate(ws.iter_rows(values_only=True)):
-        if i >= MAX_SCAN_ROWS:
-            cap_reached = True
-            global_warnings.append(
-                f"Sheet '{ws.title}': row scan limit ({MAX_SCAN_ROWS:,}) reached. "
-                "Remaining rows were not inspected. "
-                "The dataset may be larger than what was processed."
-            )
+    scan_limit = min(MAX_SCAN_ROWS, max_row_limit) if max_row_limit else MAX_SCAN_ROWS
+
+    for i, row in enumerate(ws.iter_rows(max_row=scan_limit, values_only=True)):
+        if i >= scan_limit:
+            if max_row_limit is None or scan_limit >= MAX_SCAN_ROWS:
+                cap_reached = True
+                global_warnings.append(
+                    f"Sheet '{ws.title}': row scan limit ({MAX_SCAN_ROWS:,}) reached. "
+                    "Remaining rows were not inspected. "
+                    "The dataset may be larger than what was processed."
+                )
             break
 
         # Trim row to MAX_SCAN_COLS
@@ -392,6 +412,10 @@ def _detect_formula_cache_miss(
     raw: bytes,
     sheet_name: str,
     global_warnings: list[str],
+    max_row_limit: int | None = None,
+    cache: dict[str, bool] | None = None,
+    wb_data: Any | None = None,
+    wb_formula_holder: list[Any] | None = None,
 ) -> bool:
     """
     Compare a formula-mode read vs the data-only read to find cells whose
@@ -401,27 +425,47 @@ def _detect_formula_cache_miss(
     Returns True if any cache miss is found (triggers a user warning).
     Silently returns False on any openpyxl error — we never block the scan.
     """
+    if cache is not None and sheet_name in cache:
+        return cache[sheet_name]
+
+    close_f = False
+    close_d = False
+    wb_f = None
+    wb_d = None
     try:
-        wb_formula = openpyxl.load_workbook(
-            io.BytesIO(raw), data_only=False, read_only=True
-        )
-        wb_data = openpyxl.load_workbook(
-            io.BytesIO(raw), data_only=True, read_only=True
-        )
+        if wb_formula_holder is not None and wb_formula_holder[0] is not None:
+            wb_f = wb_formula_holder[0]
+        else:
+            wb_f = openpyxl.load_workbook(
+                io.BytesIO(raw), data_only=False, read_only=True
+            )
+            if wb_formula_holder is not None:
+                wb_formula_holder[0] = wb_f
+            else:
+                close_f = True
 
-        if sheet_name not in wb_formula.sheetnames:
+        if wb_data is not None:
+            wb_d = wb_data
+        else:
+            wb_d = openpyxl.load_workbook(
+                io.BytesIO(raw), data_only=True, read_only=True
+            )
+            close_d = True
+
+        if sheet_name not in wb_f.sheetnames or sheet_name not in wb_d.sheetnames:
+            if cache is not None:
+                cache[sheet_name] = False
             return False
-        ws_f = wb_formula[sheet_name]
-        ws_d = wb_data[sheet_name]
+        ws_f = wb_f[sheet_name]
+        ws_d = wb_d[sheet_name]
 
+        limit = min(MAX_SCAN_ROWS, max_row_limit) if max_row_limit else MAX_SCAN_ROWS
         miss_count = 0
         for rf, rd in zip(
-            ws_f.iter_rows(max_row=MAX_SCAN_ROWS, values_only=False),
-            ws_d.iter_rows(max_row=MAX_SCAN_ROWS, values_only=False),
+            ws_f.iter_rows(max_row=limit, values_only=True),
+            ws_d.iter_rows(max_row=limit, values_only=True),
         ):
-            for cf, cd in zip(rf, rd):
-                fv = cf.value
-                dv = cd.value
+            for fv, dv in zip(rf, rd):
                 if isinstance(fv, str) and fv.startswith("=") and dv is None:
                     miss_count += 1
                     if miss_count >= 5:
@@ -429,12 +473,24 @@ def _detect_formula_cache_miss(
             if miss_count >= 5:
                 break
 
-        wb_formula.close()
-        wb_data.close()
-        return miss_count > 0
+        res = miss_count > 0
+        if cache is not None:
+            cache[sheet_name] = res
+        return res
 
     except Exception:
         return False
+    finally:
+        if close_f and wb_f is not None:
+            try:
+                wb_f.close()
+            except Exception:
+                pass
+        if close_d and wb_d is not None:
+            try:
+                wb_d.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +639,10 @@ def _classify_block(
     grid: list[list[Any]],
     year_hint: int | None,
     raw: bytes,
+    bounds: SheetBounds | None = None,
+    formula_cache_map: dict[str, bool] | None = None,
+    wb_data: Any | None = None,
+    wb_formula_holder: list[Any] | None = None,
 ) -> BlockResult:
     """
     Classify and normalise one detected block.
@@ -596,6 +656,10 @@ def _classify_block(
     Returns a BlockResult with df, summary_df, column_roles, warnings, etc.
     """
     b = BlockResult(sheet=sheet, r0=r0, c0=c0, r1=r1, c1=c1)
+    if bounds:
+        b.physical_max_row = bounds.physical_max_row
+        b.effective_data_max_row = bounds.effective_data_max_row
+        b.ignored_trailing_rows = bounds.ignored_trailing_rows
 
     # Extract sub-grid for this block
     sub = [grid[r][c0: c1 + 1] for r in range(r0, r1 + 1)]
@@ -723,7 +787,20 @@ def _classify_block(
 
     # Formula cache warning
     try:
-        if _detect_formula_cache_miss(raw, sheet, []):
+        has_none = any(
+            row[c] is None
+            for row in grid[r0 : r1 + 1]
+            for c in range(c0, min(c1 + 1, len(row)))
+        )
+        if has_none and _detect_formula_cache_miss(
+            raw,
+            sheet,
+            [],
+            max_row_limit=r1 + 1,
+            cache=formula_cache_map,
+            wb_data=wb_data,
+            wb_formula_holder=wb_formula_holder,
+        ):
             b.formula_cache_warning = True
             b.warnings.append(
                 "One or more formula cells in this sheet have no cached result "
@@ -1247,6 +1324,11 @@ def scan_workbook(
         wb.close()
         raise ValueError("The workbook contains no readable worksheets.")
 
+    # Bounds detection (generic ghost-row detection across all sheets)
+    sheet_bounds_map = detect_all_sheet_bounds(raw)
+    sheet_formula_cache: dict[str, bool] = {}
+    wb_formula_holder: list[Any] = [None]
+
     # 6. Iterate worksheets
     sheets_processed = 0
     for ws_name in sheet_names:
@@ -1259,10 +1341,18 @@ def scan_workbook(
             break
 
         ws = wb[ws_name]
+        bounds = sheet_bounds_map.get(ws_name)
+        if bounds is None:
+            bounds = detect_openpyxl_sheet_bounds(ws)
+
+        if bounds and bounds.has_ghost_tail and bounds.warning_message:
+            global_warnings.append(bounds.warning_message)
+
         year_hint = guess_year(ws_name, filename)
 
-        # Read grid (data-only, bounded)
-        grid, sheet_cap = _read_grid_data_only(ws, global_warnings)
+        # Read grid (data-only, bounded by effective data range if ghost tail present)
+        max_row_limit = bounds.effective_data_max_row if (bounds and bounds.has_ghost_tail) else None
+        grid, sheet_cap = _read_grid_data_only(ws, global_warnings, max_row_limit=max_row_limit)
         if sheet_cap:
             overall_cap = True
 
@@ -1303,6 +1393,10 @@ def scan_workbook(
                 grid=grid,
                 year_hint=year_hint,
                 raw=raw,
+                bounds=bounds,
+                formula_cache_map=sheet_formula_cache,
+                wb_data=wb,
+                wb_formula_holder=wb_formula_holder,
             )
 
             # Optional colour pass
@@ -1321,6 +1415,15 @@ def scan_workbook(
         sheets_processed += 1
 
     wb.close()
+    if wb_formula_holder[0] is not None:
+        try:
+            wb_formula_holder[0].close()
+        except Exception:
+            pass
+
+    sheet_bounds_dict = {
+        s: b.to_dict() for s, b in sheet_bounds_map.items()
+    }
 
     return ScanResult(
         filename=filename,
@@ -1328,6 +1431,7 @@ def scan_workbook(
         blocks=result_blocks,
         global_warnings=global_warnings,
         cap_reached=overall_cap,
+        sheet_bounds=sheet_bounds_dict,
     )
 
 

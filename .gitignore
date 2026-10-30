@@ -68,6 +68,7 @@ yarn-error.log*
 *.log
 
 # Milestone 3: Private Storage & Local Databases
+data/
 backend/data/storage/
 *.parquet
 *.db
