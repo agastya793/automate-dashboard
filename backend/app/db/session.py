@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
+
+from dotenv import load_dotenv
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(backend_dir, ".env"))
+load_dotenv()
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
