@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   BarChart3,
   Filter,
@@ -39,18 +40,61 @@ import { useAuth } from "@/context/AuthContext";
 import { Header } from "@/components/Header";
 import { SummaryCard } from "@/components/SummaryCard";
 import { EmptyState } from "@/components/EmptyState";
-import { DashboardChartCard } from "@/components/DashboardChartRenderer";
-import { ExportModal } from "@/components/ExportModal";
-import {
-  TrendTargetChart,
-  ParetoChart,
-  PaynterHeatmap,
-  ActionTracker,
-  ModelComparisonChart,
-  ProvenanceModal,
-  ReconciliationBanner,
-} from "@/components/echarts";
 import { ProvenanceDetails, ManufacturingGlobalFilters } from "@/lib/mappingTypes";
+
+function ChartLoadingPlaceholder({ title }: { title?: string }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm min-h-[300px] flex flex-col items-center justify-center text-slate-400 gap-2">
+      <RotateCw className="w-5 h-5 animate-spin text-indigo-500" />
+      <span className="text-xs text-slate-500 font-medium">Loading {title || "chart"}...</span>
+    </div>
+  );
+}
+
+// Code-split heavy visualization components to avoid cold-compilation bottlenecks
+const TrendTargetChart = dynamic(
+  () => import("@/components/echarts/TrendTargetChart").then((m) => m.TrendTargetChart),
+  { loading: () => <ChartLoadingPlaceholder title="PPM Trend vs Target" />, ssr: false }
+);
+const ParetoChart = dynamic(
+  () => import("@/components/echarts/ParetoChart").then((m) => m.ParetoChart),
+  { loading: () => <ChartLoadingPlaceholder title="Defect Pareto" />, ssr: false }
+);
+const PaynterHeatmap = dynamic(
+  () => import("@/components/echarts/PaynterHeatmap").then((m) => m.PaynterHeatmap),
+  { loading: () => <ChartLoadingPlaceholder title="Paynter Heatmap" />, ssr: false }
+);
+const ModelComparisonChart = dynamic(
+  () => import("@/components/echarts/ModelComparisonChart").then((m) => m.ModelComparisonChart),
+  { loading: () => <ChartLoadingPlaceholder title="Model Comparison" />, ssr: false }
+);
+const ActionTracker = dynamic(
+  () => import("@/components/echarts/ActionTracker").then((m) => m.ActionTracker),
+  { loading: () => <ChartLoadingPlaceholder title="Action Tracker" />, ssr: false }
+);
+const ReconciliationBanner = dynamic(
+  () => import("@/components/echarts/ReconciliationBanner").then((m) => m.ReconciliationBanner),
+  { ssr: false }
+);
+const ProvenanceModal = dynamic(
+  () => import("@/components/echarts/ProvenanceModal").then((m) => m.ProvenanceModal),
+  { ssr: false }
+);
+const ExportModal = dynamic(
+  () => import("@/components/ExportModal").then((m) => m.ExportModal),
+  { ssr: false }
+);
+const DashboardChartCard = dynamic(
+  () => import("@/components/DashboardChartRenderer").then((m) => m.DashboardChartCard),
+  {
+    loading: () => (
+      <div className="h-72 bg-slate-50 animate-pulse rounded-xl border border-slate-200 flex items-center justify-center">
+        <RotateCw className="w-4 h-4 animate-spin text-slate-400" />
+      </div>
+    ),
+    ssr: false,
+  }
+);
 
 function DashboardContent() {
   const router = useRouter();
@@ -170,19 +214,73 @@ function DashboardContent() {
     }
   };
 
-  // If in-memory state is empty (e.g. page refresh) and no manufacturing data
-  if (!dashboardData && !file && !manufacturingData) {
+  // 1. Loading state for auto-loading saved dashboards via query params
+  const isAutoLoadingSaved =
+    (Boolean(searchParams.get("dashboard_id")) || Boolean(searchParams.get("upload_id"))) &&
+    !manufacturingData;
+
+  if (isAutoLoadingSaved) {
     return (
       <div className="flex flex-col min-h-full">
         <Header
-          title="Manufacturing Quality Dashboard"
-          description="Interactive quality reporting and verified PPM metrics."
+          title="Loading Dashboard"
+          description="Retrieving saved report specifications and analytical queries..."
+        />
+        <div className="p-8 max-w-xl mx-auto w-full text-center space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center mx-auto text-indigo-600">
+            <RotateCw className="w-6 h-6 animate-spin" />
+          </div>
+          <h2 className="text-base font-semibold text-slate-800">
+            Loading Dashboard Data
+          </h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Please wait while saved metrics are being retrieved and DuckDB queries are evaluated.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Loading state while dataset aggregations or queries are generating
+  if (isGenerating && !manufacturingData && !dashboardData) {
+    return (
+      <div className="flex flex-col min-h-full">
+        <Header
+          title="Generating Dashboard"
+          description="Calculating verified aggregations..."
+        />
+        <div className="p-8 max-w-xl mx-auto w-full text-center space-y-4">
+          <div className="w-12 h-12 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center mx-auto text-indigo-600">
+            <RotateCw className="w-6 h-6 animate-spin" />
+          </div>
+          <h2 className="text-base font-semibold text-slate-800">
+            Calculating Analytical Data
+          </h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Running aggregations and preparing visualization data.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Safe empty state if neither manufacturingData nor dashboardData exists
+  if (!manufacturingData && !dashboardData) {
+    return (
+      <div className="flex flex-col min-h-full">
+        <Header
+          title="Analytics Dashboard"
+          description="Interactive business reports generated from uploaded datasets."
         />
         <div className="p-6 sm:p-8 max-w-4xl mx-auto w-full">
           <EmptyState
             icon={FileSpreadsheet}
-            title="No Active Dataset or Dashboard in Session"
-            description="To inspect verified quality dashboards, upload an Excel or CSV file in the Upload & Mapping workspace, or reopen a saved manufacturing dashboard."
+            title={file ? "Dashboard Not Yet Generated" : "No Active Dataset or Dashboard in Session"}
+            description={
+              file
+                ? `Dataset "${file.name}" is uploaded, but charts have not been generated yet. Please configure your charts and click Generate Dashboard on the Upload page.`
+                : "To inspect verified quality dashboards, upload an Excel or CSV file in the Upload & Mapping workspace, or reopen a saved manufacturing dashboard."
+            }
             action={
               <div className="flex items-center gap-3 flex-wrap justify-center">
                 <Link
@@ -190,7 +288,7 @@ function DashboardContent() {
                   className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-colors"
                 >
                   <UploadCloud className="w-4 h-4" />
-                  <span>Upload & Map Dataset</span>
+                  <span>{file ? "Configure & Generate Charts" : "Upload & Map Dataset"}</span>
                 </Link>
                 <Link
                   href="/reports"
@@ -202,29 +300,6 @@ function DashboardContent() {
               </div>
             }
           />
-        </div>
-      </div>
-    );
-  }
-
-  // Loading state
-  if (isGenerating && !manufacturingData && !dashboardData) {
-    return (
-      <div className="flex flex-col min-h-full">
-        <Header
-          title="Generating Quality Dashboard"
-          description="Calculating verified aggregations and DuckDB queries..."
-        />
-        <div className="p-8 max-w-xl mx-auto w-full text-center space-y-4">
-          <div className="w-12 h-12 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center mx-auto text-indigo-600">
-            <RotateCw className="w-6 h-6 animate-spin" />
-          </div>
-          <h2 className="text-base font-semibold text-slate-800">
-            Executing Manufacturing Analytical Queries
-          </h2>
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Running parameterized DuckDB queries over Parquet datasets and calculating reconciliation metrics.
-          </p>
         </div>
       </div>
     );
@@ -705,7 +780,11 @@ function DashboardContent() {
   // =========================================================================
   // VIEW 2: Generic Dataset Dashboard (Milestone 1-3 Fallback)
   // =========================================================================
-  const data = dashboardData!;
+  if (!dashboardData) {
+    return null;
+  }
+
+  const data = dashboardData;
   const summary = data.dataset_summary;
 
   return (

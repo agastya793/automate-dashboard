@@ -62,6 +62,7 @@ export interface ChartConfigInput {
   aggregation?: string;
   date_granularity?: string | null;
   top_n?: number | null;
+  sort_order?: string | null;
   is_confirmed?: boolean;
 }
 
@@ -278,7 +279,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       const configsPayload: ChartConfigInput[] = eligibleCharts.map((c) => ({
         id: c.id,
         chart_type: c.chart_type,
-        title: c.original.title,
+        title: c.customTitle || (c as any).title || c.original?.title || "Custom Chart",
         dimension_column: c.dimension_column,
         secondary_dimension_column: c.secondary_dimension_column,
         date_column: c.date_column,
@@ -286,6 +287,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         aggregation: c.aggregation,
         date_granularity: c.date_granularity,
         top_n: c.top_n,
+        sort_order: c.sort_order,
         is_confirmed: c.isConfirmed,
       }));
 
