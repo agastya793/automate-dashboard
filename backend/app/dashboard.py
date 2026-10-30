@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 class ChartConfigInput(BaseModel):
     id: str
     title: str
-    chart_type: str  # "line", "bar", "ranked_bar", "donut", "histogram", "stacked_bar"
+    chart_type: str  # "line", "bar", "vertical_bar", "horizontal_bar", "ranked_bar", "donut", "pie", "histogram", "stacked_bar"
     dimension_column: Optional[str] = None
     secondary_dimension_column: Optional[str] = None
     date_column: Optional[str] = None
@@ -30,7 +30,7 @@ class ChartConfigInput(BaseModel):
     aggregation: str = "sum"  # "sum", "mean", "min", "max", "count"
     date_granularity: Optional[str] = None  # "day", "week", "month", "year"
     top_n: Optional[int] = None
-    sort_order: Optional[str] = None  # "desc", "asc", "chronological"
+    sort_order: Optional[str] = None  # "desc", "asc", "original", "natural", "chronological"
 
 
 class GlobalFilterInput(BaseModel):
@@ -234,6 +234,74 @@ def _clean_numeric_series(series: pd.Series) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# Chart Configuration Validation
+# ---------------------------------------------------------------------------
+
+def validate_chart_config(
+    config: ChartConfigInput,
+    column_profiles: list[dict[str, Any]],
+) -> list[str]:
+    """
+    Validates a chart configuration against dataset column profiles.
+    Returns a list of error strings; empty if valid.
+    """
+    errors: list[str] = []
+    c_type = config.chart_type.lower()
+    agg = (config.aggregation or "sum").lower()
+
+    col_map = {p["name"]: p for p in column_profiles}
+
+    # 1. Dimension validation
+    if c_type in ("bar", "vertical_bar", "horizontal_bar", "ranked_bar", "donut", "pie", "stacked_bar"):
+        if not config.dimension_column:
+            errors.append(f"Dimension column is required for chart type '{config.chart_type}'.")
+        elif config.dimension_column not in col_map:
+            errors.append(f"Dimension column '{config.dimension_column}' not found in dataset.")
+
+    if c_type == "stacked_bar":
+        if not config.secondary_dimension_column:
+            errors.append("Secondary dimension (series) column is required for stacked bar charts.")
+        elif config.secondary_dimension_column not in col_map:
+            errors.append(f"Secondary dimension column '{config.secondary_dimension_column}' not found in dataset.")
+
+    if c_type == "line":
+        if not config.date_column and not config.dimension_column:
+            errors.append("Date or dimension column is required for line chart.")
+        else:
+            col = config.date_column or config.dimension_column
+            if col and col not in col_map:
+                errors.append(f"Date/dimension column '{col}' not found in dataset.")
+
+    # 2. Histogram validation
+    if c_type == "histogram":
+        if not config.measure_column:
+            errors.append("Measure column is required for histogram.")
+        elif config.measure_column not in col_map:
+            errors.append(f"Measure column '{config.measure_column}' not found in dataset.")
+        else:
+            inferred = col_map[config.measure_column].get("inferred_type", "").lower()
+            if inferred not in ("numeric", "currency", "percentage"):
+                errors.append(
+                    f"Histogram requires a numeric measure column. Column '{config.measure_column}' is {inferred}."
+                )
+
+    # 3. Measure & Aggregation validation
+    if agg in ("sum", "mean", "min", "max"):
+        if not config.measure_column:
+            errors.append(f"Measure column is required when aggregation is '{agg}'.")
+        elif config.measure_column not in col_map:
+            errors.append(f"Measure column '{config.measure_column}' not found in dataset.")
+        else:
+            inferred = col_map[config.measure_column].get("inferred_type", "").lower()
+            if inferred == "identifier" and agg in ("sum", "mean"):
+                errors.append(
+                    f"Identifier column '{config.measure_column}' cannot be summed or averaged."
+                )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Individual Chart Computations
 # ---------------------------------------------------------------------------
 
@@ -241,7 +309,7 @@ def _compute_line_chart(
     df: DataFrame,
     config: ChartConfigInput,
 ) -> ComputedChart:
-    d_col = config.date_column
+    d_col = config.date_column or config.dimension_column
     m_col = config.measure_column
     agg = config.aggregation.lower()
     granularity = (config.date_granularity or "day").lower()
@@ -255,43 +323,53 @@ def _compute_line_chart(
             config=config,
             data=[],
             total_points=0,
-            warnings=[f"Date column '{d_col}' not found."],
+            warnings=[f"Date or dimension column '{d_col}' not found."],
         )
 
+    # Check if d_col parses into dates
     dt_series = pd.to_datetime(df[d_col], errors="coerce")
-    valid_mask = dt_series.notna()
-    null_dates = int((~valid_mask).sum())
-    if null_dates > 0:
-        warnings.append(f"{null_dates} records have missing/invalid dates and were omitted.")
+    valid_dates_count = int(dt_series.notna().sum())
+    is_date_col = valid_dates_count > 0 and (valid_dates_count / max(len(df), 1) >= 0.5)
 
-    sub_df = df[valid_mask].copy()
-    if sub_df.empty:
-        return ComputedChart(
-            id=config.id,
-            title=config.title,
-            chart_type="line",
-            config=config,
-            data=[],
-            total_points=0,
-            warnings=["No valid date records available."],
-        )
+    sub_df = df.copy()
 
-    # Format date bucket
-    sub_dt = pd.to_datetime(sub_df[d_col], errors="coerce")
-    if granularity == "year":
-        sub_df["_bucket"] = sub_dt.dt.strftime("%Y")
-    elif granularity == "month":
-        sub_df["_bucket"] = sub_dt.dt.strftime("%Y-%m")
-    elif granularity == "week":
-        sub_df["_bucket"] = sub_dt.dt.strftime("%Y-W%W")
+    if is_date_col:
+        valid_mask = dt_series.notna()
+        null_dates = int((~valid_mask).sum())
+        if null_dates > 0:
+            warnings.append(f"{null_dates} records have missing/invalid dates and were omitted.")
+
+        sub_df = sub_df[valid_mask].copy()
+        if sub_df.empty:
+            return ComputedChart(
+                id=config.id,
+                title=config.title,
+                chart_type="line",
+                config=config,
+                data=[],
+                total_points=0,
+                warnings=["No valid date records available."],
+            )
+
+        # Format date bucket
+        sub_dt = pd.to_datetime(sub_df[d_col], errors="coerce")
+        if granularity == "year":
+            sub_df["_bucket"] = sub_dt.dt.strftime("%Y")
+        elif granularity == "month":
+            sub_df["_bucket"] = sub_dt.dt.strftime("%Y-%m")
+        elif granularity == "week":
+            sub_df["_bucket"] = sub_dt.dt.strftime("%Y-W%W")
+        else:
+            sub_df["_bucket"] = sub_dt.dt.strftime("%Y-%m-%d")
     else:
-        sub_df["_bucket"] = sub_dt.dt.strftime("%Y-%m-%d")
+        # Categorical / ordered dimension axis
+        sub_df["_bucket"] = sub_df[d_col].fillna("Unknown").astype(str).str.strip()
 
     data_points: list[dict[str, Any]] = []
 
     if m_col and m_col in sub_df.columns:
         sub_df["_measure"] = _clean_numeric_series(sub_df[m_col])
-        grouped = sub_df.groupby("_bucket")["_measure"]
+        grouped = sub_df.groupby("_bucket", sort=is_date_col)["_measure"]
 
         if agg == "mean":
             agg_series = grouped.mean()
@@ -304,14 +382,18 @@ def _compute_line_chart(
         else:
             agg_series = grouped.sum()
 
-        agg_df = agg_series.reset_index().sort_values("_bucket")
+        agg_df = agg_series.reset_index()
+        if is_date_col:
+            agg_df = agg_df.sort_values("_bucket")
         for _, row in agg_df.iterrows():
             val = _sanitize_val(row["_measure"])
             if val is not None:
                 data_points.append({"label": str(row["_bucket"]), "value": val})
     else:
         # Record count trend
-        agg_series = sub_df.groupby("_bucket").size().reset_index(name="count").sort_values("_bucket")
+        agg_series = sub_df.groupby("_bucket", sort=is_date_col).size().reset_index(name="count")
+        if is_date_col:
+            agg_series = agg_series.sort_values("_bucket")
         for _, row in agg_series.iterrows():
             data_points.append({"label": str(row["_bucket"]), "value": int(row["count"])})
 
@@ -335,13 +417,16 @@ def _compute_bar_chart(
     m_col = config.measure_column
     agg = config.aggregation.lower()
     top_n = config.top_n
+    sort_order = (config.sort_order or "desc").lower()
+    c_type = config.chart_type.lower()
+    out_type = "horizontal_bar" if c_type in ("horizontal_bar", "ranked_bar") else "bar"
     warnings: list[str] = []
 
     if not dim_col or dim_col not in df.columns:
         return ComputedChart(
             id=config.id,
             title=config.title,
-            chart_type="ranked_bar" if is_ranked else "bar",
+            chart_type=out_type,
             config=config,
             data=[],
             total_points=0,
@@ -355,7 +440,7 @@ def _compute_bar_chart(
 
     if m_col and m_col in sub_df.columns:
         sub_df["_measure"] = _clean_numeric_series(sub_df[m_col])
-        grouped = sub_df.groupby("_dim")["_measure"]
+        grouped = sub_df.groupby("_dim", sort=False)["_measure"]
 
         if agg == "mean":
             agg_series = grouped.mean()
@@ -369,10 +454,17 @@ def _compute_bar_chart(
             agg_series = grouped.sum()
 
         agg_df = agg_series.reset_index()
-        # Sort descending by value
-        agg_df = agg_df.sort_values("_measure", ascending=False)
 
-        if is_ranked and top_n:
+        # Apply sort order
+        if sort_order == "asc":
+            agg_df = agg_df.sort_values("_measure", ascending=True)
+        elif sort_order in ("original", "natural", "chronological"):
+            pass  # preserve natural first-appearance order
+        else:
+            agg_df = agg_df.sort_values("_measure", ascending=False)
+
+        # Apply top-N limit after aggregation
+        if top_n:
             agg_df = agg_df.head(top_n)
 
         for _, row in agg_df.iterrows():
@@ -381,9 +473,15 @@ def _compute_bar_chart(
                 data_points.append({"label": str(row["_dim"]), "value": val})
     else:
         # Count frequency
-        agg_series = sub_df["_dim"].value_counts().reset_index()
+        if sort_order in ("original", "natural", "chronological"):
+            agg_series = sub_df["_dim"].value_counts(sort=False).reset_index()
+        elif sort_order == "asc":
+            agg_series = sub_df["_dim"].value_counts(ascending=True).reset_index()
+        else:
+            agg_series = sub_df["_dim"].value_counts(ascending=False).reset_index()
+
         agg_series.columns = ["_dim", "count"]
-        if is_ranked and top_n:
+        if top_n:
             agg_series = agg_series.head(top_n)
         for _, row in agg_series.iterrows():
             data_points.append({"label": str(row["_dim"]), "value": int(row["count"])})
@@ -391,7 +489,7 @@ def _compute_bar_chart(
     return ComputedChart(
         id=config.id,
         title=config.title,
-        chart_type="ranked_bar" if is_ranked else "bar",
+        chart_type=out_type,
         config=config,
         data=data_points,
         total_points=len(data_points),
@@ -399,45 +497,85 @@ def _compute_bar_chart(
     )
 
 
-def _compute_donut_chart(
+def _compute_donut_or_pie_chart(
     df: DataFrame,
     config: ChartConfigInput,
+    chart_type: str = "donut",
 ) -> ComputedChart:
     dim_col = config.dimension_column
+    m_col = config.measure_column
+    agg = config.aggregation.lower()
+    top_n = config.top_n
     warnings: list[str] = []
 
     if not dim_col or dim_col not in df.columns:
         return ComputedChart(
             id=config.id,
             title=config.title,
-            chart_type="donut",
+            chart_type=chart_type,
             config=config,
             data=[],
             total_points=0,
             warnings=[f"Dimension column '{dim_col}' not found."],
         )
 
-    s = df[dim_col].fillna("Unknown").astype(str).str.strip()
-    counts = s.value_counts()
+    sub_df = df.copy()
+    sub_df["_dim"] = sub_df[dim_col].fillna("Unknown").astype(str).str.strip()
 
-    # If more than 10 categories, keep top 8 and group into "Other"
     data_points: list[dict[str, Any]] = []
-    if len(counts) > 10:
-        top_counts = counts.head(8)
-        other_sum = int(counts.iloc[8:].sum())
-        for cat, cnt in top_counts.items():
-            data_points.append({"label": str(cat), "value": int(cnt)})
+
+    if m_col and m_col in sub_df.columns:
+        sub_df["_measure"] = _clean_numeric_series(sub_df[m_col])
+        grouped = sub_df.groupby("_dim", sort=False)["_measure"]
+
+        if agg == "mean":
+            agg_series = grouped.mean()
+        elif agg == "min":
+            agg_series = grouped.min()
+        elif agg == "max":
+            agg_series = grouped.max()
+        elif agg == "count":
+            agg_series = grouped.count()
+        else:
+            agg_series = grouped.sum()
+
+        agg_df = agg_series.reset_index().sort_values("_measure", ascending=False)
+        total_val = float(agg_df["_measure"].sum()) if not agg_df.empty else 0.0
+
+        limit = top_n if top_n else (8 if len(agg_df) > 10 else len(agg_df))
+        top_df = agg_df.head(limit)
+        other_sum = float(agg_df.iloc[limit:]["_measure"].sum()) if len(agg_df) > limit else 0.0
+
+        for _, row in top_df.iterrows():
+            val = _sanitize_val(row["_measure"])
+            if val is not None:
+                pct = round((val / total_val) * 100, 1) if total_val > 0 else 0
+                data_points.append({"label": str(row["_dim"]), "value": val, "percentage": pct})
         if other_sum > 0:
-            data_points.append({"label": "Other", "value": other_sum})
-        warnings.append("Consolidated long-tail categories into 'Other' for readability.")
+            other_val = round(other_sum, 2)
+            pct = round((other_sum / total_val) * 100, 1) if total_val > 0 else 0
+            data_points.append({"label": "Other", "value": other_val, "percentage": pct})
+            warnings.append("Consolidated remaining categories into 'Other' for readability.")
     else:
-        for cat, cnt in counts.items():
-            data_points.append({"label": str(cat), "value": int(cnt)})
+        # Frequency count
+        counts = sub_df["_dim"].value_counts()
+        total_cnt = int(counts.sum()) if not counts.empty else 0
+        limit = top_n if top_n else (8 if len(counts) > 10 else len(counts))
+        top_counts = counts.head(limit)
+        other_cnt = int(counts.iloc[limit:].sum()) if len(counts) > limit else 0
+
+        for cat, cnt in top_counts.items():
+            pct = round((cnt / total_cnt) * 100, 1) if total_cnt > 0 else 0
+            data_points.append({"label": str(cat), "value": int(cnt), "percentage": pct})
+        if other_cnt > 0:
+            pct = round((other_cnt / total_cnt) * 100, 1) if total_cnt > 0 else 0
+            data_points.append({"label": "Other", "value": other_cnt, "percentage": pct})
+            warnings.append("Consolidated remaining categories into 'Other' for readability.")
 
     return ComputedChart(
         id=config.id,
         title=config.title,
-        chart_type="donut",
+        chart_type=chart_type,
         config=config,
         data=data_points,
         total_points=len(data_points),
@@ -656,14 +794,32 @@ def generate_dashboard_data(
 
     for cfg in chart_configs:
         c_type = cfg.chart_type.lower()
+        cfg_errors = validate_chart_config(cfg, column_profiles)
+        if cfg_errors:
+            dashboard_warnings.extend(cfg_errors)
+            computed_charts.append(
+                ComputedChart(
+                    id=cfg.id,
+                    title=cfg.title,
+                    chart_type=cfg.chart_type,
+                    config=cfg,
+                    data=[],
+                    total_points=0,
+                    warnings=cfg_errors,
+                )
+            )
+            continue
+
         if c_type == "line":
             computed_charts.append(_compute_line_chart(filtered_df, cfg))
-        elif c_type == "ranked_bar":
-            computed_charts.append(_compute_bar_chart(filtered_df, cfg, is_ranked=True))
-        elif c_type == "bar":
+        elif c_type in ("bar", "vertical_bar"):
             computed_charts.append(_compute_bar_chart(filtered_df, cfg, is_ranked=False))
-        elif c_type in ("donut", "pie"):
-            computed_charts.append(_compute_donut_chart(filtered_df, cfg))
+        elif c_type in ("ranked_bar", "horizontal_bar"):
+            computed_charts.append(_compute_bar_chart(filtered_df, cfg, is_ranked=True))
+        elif c_type == "pie":
+            computed_charts.append(_compute_donut_or_pie_chart(filtered_df, cfg, chart_type="pie"))
+        elif c_type == "donut":
+            computed_charts.append(_compute_donut_or_pie_chart(filtered_df, cfg, chart_type="donut"))
         elif c_type == "histogram":
             computed_charts.append(_compute_histogram(filtered_df, cfg))
         elif c_type == "stacked_bar":

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import {
   TrendingUp,
   BarChart3,
-  PieChart,
+  PieChart as PieIcon,
   Layers,
   SlidersHorizontal,
   Check,
@@ -19,8 +19,15 @@ import {
   ChevronUp,
   Sparkles,
   Info,
+  Plus,
+  Trash2,
+  Edit3,
+  Wrench,
+  ArrowUpDown,
+  Type,
 } from "lucide-react";
 import { ColumnProfile } from "@/app/upload/page";
+import { CustomChartModal } from "@/components/CustomChartModal";
 
 // ---------------------------------------------------------------------------
 // Types matching backend Phase 3 contract
@@ -29,7 +36,7 @@ import { ColumnProfile } from "@/app/upload/page";
 export interface ChartRecommendation {
   id: string;
   title: string;
-  chart_type: string; // "line", "bar", "ranked_bar", "donut", "histogram", "stacked_bar"
+  chart_type: string; // "line", "bar", "vertical_bar", "horizontal_bar", "ranked_bar", "donut", "pie", "histogram", "stacked_bar"
   dimension_column?: string | null;
   secondary_dimension_column?: string | null;
   date_column?: string | null;
@@ -63,12 +70,16 @@ export interface ConfiguredChart {
   aggregation: string;
   date_granularity: string | null;
   top_n: number | null;
+  sort_order?: string | null;
+  customTitle?: string | null;
+  isCustom?: boolean;
   original: ChartRecommendation;
 }
 
 interface RecommendedChartsProps {
   recommendations: ChartRecommendation[];
   columns: ColumnProfile[];
+  previewRows?: (string | number | boolean | null)[][];
   onChartsChange?: (charts: ConfiguredChart[]) => void;
   initialCharts?: ConfiguredChart[];
 }
@@ -87,6 +98,7 @@ function ChartTypeBadge({ chartType }: { chartType: string }) {
         </span>
       );
     case "bar":
+    case "vertical_bar":
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
           <BarChart3 className="w-3 h-3 text-emerald-500" />
@@ -94,17 +106,24 @@ function ChartTypeBadge({ chartType }: { chartType: string }) {
         </span>
       );
     case "ranked_bar":
+    case "horizontal_bar":
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-teal-50 text-teal-700 border border-teal-200">
           <BarChart3 className="w-3 h-3 text-teal-500" />
-          <span>Ranked Top-N</span>
+          <span>Horizontal Bar</span>
+        </span>
+      );
+    case "pie":
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-violet-50 text-violet-700 border border-violet-200">
+          <PieIcon className="w-3 h-3 text-violet-500" />
+          <span>Pie Share</span>
         </span>
       );
     case "donut":
-    case "pie":
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
-          <PieChart className="w-3 h-3 text-purple-500" />
+          <PieIcon className="w-3 h-3 text-purple-500" />
           <span>Donut Share</span>
         </span>
       );
@@ -167,6 +186,7 @@ function SuitabilityBadge({ suitability }: { suitability: string }) {
 export function RecommendedCharts({
   recommendations,
   columns,
+  previewRows = [],
   onChartsChange,
   initialCharts,
 }: RecommendedChartsProps) {
@@ -190,6 +210,9 @@ export function RecommendedCharts({
       aggregation: rec.suggested_aggregation,
       date_granularity: rec.date_granularity ?? null,
       top_n: rec.top_n ?? null,
+      sort_order: rec.sort_order ?? "desc",
+      customTitle: null,
+      isCustom: false,
       original: rec,
     }));
   });
@@ -199,6 +222,11 @@ export function RecommendedCharts({
   }, [charts, onChartsChange]);
 
   const [showDismissed, setShowDismissed] = useState(false);
+  const [filterTab, setFilterTab] = useState<"all" | "recommended" | "custom">("all");
+
+  // Custom Chart Builder Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [chartToEdit, setChartToEdit] = useState<ConfiguredChart | null>(null);
 
   // Column categorization for dropdowns
   const dateOptions = columns.filter((c) => c.inferred_type === "date").map((c) => c.name);
@@ -271,6 +299,8 @@ export function RecommendedCharts({
           aggregation: o.suggested_aggregation,
           date_granularity: o.date_granularity ?? null,
           top_n: o.top_n ?? null,
+          sort_order: o.sort_order ?? "desc",
+          customTitle: null,
         };
       })
     );
@@ -295,51 +325,52 @@ export function RecommendedCharts({
     );
   };
 
+  // Custom Chart handlers
+  const handleOpenCreateModal = () => {
+    setChartToEdit(null);
+    setIsModalOpen(true);
+  };
+
+  const handleOpenEditModal = (chart: ConfiguredChart) => {
+    setChartToEdit(chart);
+    setIsModalOpen(true);
+  };
+
+  const handleDeleteChart = (id: string) => {
+    setCharts((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const handleSaveCustomChart = (savedChart: ConfiguredChart) => {
+    setCharts((prev) => {
+      const exists = prev.some((c) => c.id === savedChart.id);
+      if (exists) {
+        return prev.map((c) => (c.id === savedChart.id ? savedChart : c));
+      }
+      return [savedChart, ...prev];
+    });
+  };
+
   const activeCharts = charts.filter((c) => !c.dismissed);
   const dismissedCharts = charts.filter((c) => c.dismissed);
+  const recommendedCount = activeCharts.filter((c) => !c.isCustom).length;
+  const customCount = activeCharts.filter((c) => c.isCustom).length;
+
+  const displayedCharts = activeCharts.filter((c) => {
+    if (filterTab === "recommended") return !c.isCustom;
+    if (filterTab === "custom") return c.isCustom;
+    return true;
+  });
+
   const selectedCount = activeCharts.filter((c) => c.selected).length;
   const confirmedCount = activeCharts.filter((c) => c.selected && c.isConfirmed).length;
-
-  if (recommendations.length === 0) {
-    return (
-      <section
-        aria-labelledby="recommendations-heading"
-        className="bg-white rounded-xl border border-slate-200 p-8 shadow-sm space-y-4"
-      >
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-amber-500" />
-          <h2
-            id="recommendations-heading"
-            className="text-base font-semibold text-slate-900 tracking-tight"
-          >
-            Recommended Charts
-          </h2>
-        </div>
-
-        <div className="p-6 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-3">
-          <div className="w-10 h-10 rounded-full bg-slate-200/70 text-slate-500 flex items-center justify-center mx-auto">
-            <Info className="w-5 h-5" />
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-sm font-semibold text-slate-800">
-              No Automatic Chart Recommendations Available
-            </h3>
-            <p className="text-xs text-slate-500 max-w-lg mx-auto leading-relaxed">
-              The recommendation engine could not identify suitable pairs of categorical dimensions, temporal dates, or quantitative measures in this sheet. Ensure your table contains column headers with dates, category names, or numeric values rather than purely arbitrary identifiers.
-            </p>
-          </div>
-        </div>
-      </section>
-    );
-  }
 
   return (
     <section
       aria-labelledby="recommendations-heading"
       className="bg-white rounded-xl border border-slate-200 p-6 sm:p-7 shadow-sm space-y-6"
     >
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* Header with Title and Create Custom Chart Button */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-brand-600" />
@@ -347,33 +378,42 @@ export function RecommendedCharts({
               id="recommendations-heading"
               className="text-base font-semibold text-slate-900 tracking-tight"
             >
-              Step 5: Recommended Charts ({activeCharts.length})
+              Step 5: Visualizations & Analysis ({activeCharts.length})
             </h2>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Deterministic visualizations generated from column schema analysis. Review mappings, adjust aggregations, or dismiss suggestions.
+            Automatic chart recommendations and user-created custom charts for interactive reporting.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-            {selectedCount} of {activeCharts.length} selected
-          </span>
+        {/* Action Controls */}
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Create Custom Chart Button */}
+          <button
+            type="button"
+            onClick={handleOpenCreateModal}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Create Custom Chart</span>
+          </button>
+
           {confirmedCount < selectedCount && (
             <button
               type="button"
               onClick={handleConfirmAll}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-md border border-emerald-300 transition-colors shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-lg border border-emerald-300 transition-colors shadow-2xs"
             >
               <Check className="w-3.5 h-3.5" />
               <span>Confirm All ({selectedCount})</span>
             </button>
           )}
+
           {dismissedCharts.length > 0 && (
             <button
               type="button"
               onClick={() => setShowDismissed(!showDismissed)}
-              className="text-xs text-slate-600 hover:text-slate-900 underline underline-offset-2 flex items-center gap-1"
+              className="text-xs text-slate-600 hover:text-slate-900 underline underline-offset-2 flex items-center gap-1 ml-1"
             >
               <Eye className="w-3.5 h-3.5" />
               <span>{showDismissed ? "Hide" : "Show"} dismissed ({dismissedCharts.length})</span>
@@ -382,11 +422,88 @@ export function RecommendedCharts({
         </div>
       </div>
 
-      {/* Recommendations Cards Grid */}
+      {/* Tabs Filter Bar */}
+      <div className="flex items-center justify-between border-b border-slate-200 pb-3 gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg">
+          <button
+            type="button"
+            onClick={() => setFilterTab("all")}
+            className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+              filterTab === "all"
+                ? "bg-white text-slate-900 shadow-2xs font-bold"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            All Charts ({activeCharts.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilterTab("recommended")}
+            className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+              filterTab === "recommended"
+                ? "bg-white text-slate-900 shadow-2xs font-bold"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <Sparkles className="w-3 h-3 text-amber-500" />
+            <span>Recommended ({recommendedCount})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setFilterTab("custom")}
+            className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+              filterTab === "custom"
+                ? "bg-white text-slate-900 shadow-2xs font-bold"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <Wrench className="w-3 h-3 text-purple-600" />
+            <span>Custom ({customCount})</span>
+          </button>
+        </div>
+
+        <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+          {selectedCount} of {activeCharts.length} selected for dashboard
+        </span>
+      </div>
+
+      {/* Empty State when no charts match current tab */}
+      {displayedCharts.length === 0 && (
+        <div className="p-8 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-3">
+          <div className="w-10 h-10 rounded-full bg-slate-200/70 text-slate-500 flex items-center justify-center mx-auto">
+            <Info className="w-5 h-5" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-slate-800">
+              {filterTab === "custom"
+                ? "No Custom Charts Created Yet"
+                : filterTab === "recommended"
+                ? "No Recommended Charts Available"
+                : "No Charts in Active List"}
+            </h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+              {filterTab === "custom"
+                ? "Click \"Create Custom Chart\" above to configure your own metrics, dimensions, aggregations, and chart types."
+                : "The system did not generate automatic recommendations for this worksheet. You can still create custom charts manually."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleOpenCreateModal}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors mx-auto"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Create Custom Chart</span>
+          </button>
+        </div>
+      )}
+
+      {/* Charts Cards Grid */}
       <div className="space-y-4">
-        {activeCharts.map((chart) => {
+        {displayedCharts.map((chart) => {
           const rec = chart.original;
           const isSelected = chart.selected;
+          const displayTitle = chart.customTitle || rec.title;
 
           return (
             <div
@@ -410,7 +527,7 @@ export function RecommendedCharts({
                         : "bg-white text-transparent border-slate-300 hover:border-slate-400"
                     }`}
                     title={isSelected ? "Deselect chart" : "Select chart for reporting"}
-                    aria-label={`Toggle selection for ${rec.title}`}
+                    aria-label={`Toggle selection for ${displayTitle}`}
                   >
                     <Check className="w-3.5 h-3.5 stroke-[3]" />
                   </button>
@@ -418,10 +535,24 @@ export function RecommendedCharts({
                   <div className="space-y-1.5 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-sm font-bold text-slate-900 tracking-tight">
-                        {rec.title}
+                        {displayTitle}
                       </h3>
                       <ChartTypeBadge chartType={chart.chart_type} />
-                      <SuitabilityBadge suitability={rec.suitability} />
+
+                      {/* Source Badge: Custom vs Recommended */}
+                      {chart.isCustom ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-purple-100 text-purple-800 border border-purple-200">
+                          <Wrench className="w-3 h-3 text-purple-600" />
+                          <span>Custom</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-50 text-amber-800 border border-amber-200">
+                          <Sparkles className="w-3 h-3 text-amber-600" />
+                          <span>Recommended</span>
+                        </span>
+                      )}
+
+                      {!chart.isCustom && <SuitabilityBadge suitability={rec.suitability} />}
 
                       {/* Confirmation Status */}
                       {chart.isConfirmed ? (
@@ -436,7 +567,7 @@ export function RecommendedCharts({
                         </span>
                       )}
 
-                      {chart.userModified && (
+                      {chart.userModified && !chart.isCustom && (
                         <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
                           Customized
                         </span>
@@ -478,35 +609,64 @@ export function RecommendedCharts({
                           Top {chart.top_n}
                         </span>
                       )}
+                      {chart.sort_order && (
+                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-mono">
+                          Sort: {chart.sort_order}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 {/* Action Buttons */}
                 <div className="flex items-center gap-2 self-end md:self-start flex-shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleCustomize(chart.id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 shadow-xs transition-colors"
-                  >
-                    <Settings2 className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Customize</span>
-                    {chart.isCustomizing ? (
-                      <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                    )}
-                  </button>
+                  {chart.isCustom ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditModal(chart)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 shadow-2xs transition-colors"
+                      >
+                        <Edit3 className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteChart(chart.id)}
+                        className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors border border-transparent hover:border-rose-200"
+                        title="Remove custom chart"
+                        aria-label={`Remove custom chart ${displayTitle}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCustomize(chart.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 shadow-xs transition-colors"
+                      >
+                        <Settings2 className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Customize</span>
+                        {chart.isCustomizing ? (
+                          <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                        )}
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleDismiss(chart.id)}
-                    className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                    title="Dismiss recommendation"
-                    aria-label="Dismiss recommendation"
-                  >
-                    <EyeOff className="w-4 h-4" />
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDismiss(chart.id)}
+                        className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                        title="Dismiss recommendation"
+                        aria-label="Dismiss recommendation"
+                      >
+                        <EyeOff className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -527,26 +687,75 @@ export function RecommendedCharts({
                 </div>
               )}
 
-              {/* Customization Drawer / Inline Panel */}
+              {/* Customization Drawer / Inline Panel for Recommended Charts */}
               {chart.isCustomizing && (
                 <div className="p-5 border-t border-slate-200/90 bg-slate-50/80 rounded-b-xl space-y-4">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      Adjust Column Mapping & Aggregations
+                      Adjust Recommendation Parameters
                     </p>
-                    {chart.userModified && (
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => handleReset(chart.id)}
-                        className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800"
+                        onClick={() => handleOpenEditModal(chart)}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-600 hover:text-brand-800"
                       >
-                        <RotateCcw className="w-3 h-3" />
-                        <span>Reset to Defaults</span>
+                        <Edit3 className="w-3 h-3" />
+                        <span>Edit in Full Builder</span>
                       </button>
-                    )}
+                      {chart.userModified && (
+                        <button
+                          type="button"
+                          onClick={() => handleReset(chart.id)}
+                          className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800 ml-2"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Reset to Defaults</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Title Customization Field */}
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
+                      <Type className="w-3 h-3 text-slate-500" />
+                      <span>Chart Title</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={chart.customTitle ?? rec.title}
+                      onChange={(e) =>
+                        handleUpdateField(chart.id, "customTitle", e.target.value)
+                      }
+                      placeholder={rec.title}
+                      className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
+                    />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {/* Chart Type Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-700">
+                        Chart Type
+                      </label>
+                      <select
+                        value={chart.chart_type}
+                        onChange={(e) =>
+                          handleUpdateField(chart.id, "chart_type", e.target.value)
+                        }
+                        className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
+                      >
+                        <option value="bar">Vertical Bar</option>
+                        <option value="horizontal_bar">Horizontal Bar</option>
+                        <option value="line">Line Trend</option>
+                        <option value="pie">Pie Chart</option>
+                        <option value="donut">Donut Chart</option>
+                        <option value="stacked_bar">Stacked Bar</option>
+                        <option value="histogram">Histogram</option>
+                      </select>
+                    </div>
+
                     {/* Dimension Selector */}
                     {chart.dimension_column !== undefined && (
                       <div className="space-y-1">
@@ -653,7 +862,7 @@ export function RecommendedCharts({
                         }
                         className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
                       >
-                        {rec.supported_aggregations.map((agg) => (
+                        {["sum", "mean", "count", "min", "max"].map((agg) => (
                           <option key={agg} value={agg}>
                             {agg.toUpperCase()}
                           </option>
@@ -661,54 +870,47 @@ export function RecommendedCharts({
                       </select>
                     </div>
 
-                    {/* Date Granularity (if line trend) */}
-                    {rec.supported_date_granularities && (
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-semibold text-slate-700">
-                          Date Granularity
-                        </label>
-                        <select
-                          value={chart.date_granularity || "day"}
-                          onChange={(e) =>
-                            handleUpdateField(chart.id, "date_granularity", e.target.value)
-                          }
-                          className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
-                        >
-                          {rec.supported_date_granularities.map((g: string) => (
-                            <option key={g} value={g}>
-                              {g.charAt(0).toUpperCase() + g.slice(1)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                    {/* Sort Order Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
+                        <ArrowUpDown className="w-3 h-3 text-slate-500" />
+                        <span>Sorting Order</span>
+                      </label>
+                      <select
+                        value={chart.sort_order || "desc"}
+                        onChange={(e) =>
+                          handleUpdateField(chart.id, "sort_order", e.target.value)
+                        }
+                        className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
+                      >
+                        <option value="desc">Highest → Lowest (Descending)</option>
+                        <option value="asc">Lowest → Highest (Ascending)</option>
+                        <option value="original">Original / Natural</option>
+                      </select>
+                    </div>
 
                     {/* Top-N Filter */}
-                    {rec.supported_top_n && (
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-semibold text-slate-700">
-                          Top-N Limit
-                        </label>
-                        <select
-                          value={chart.top_n || ""}
-                          onChange={(e) =>
-                            handleUpdateField(
-                              chart.id,
-                              "top_n",
-                              e.target.value ? Number(e.target.value) : null
-                            )
-                          }
-                          className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
-                        >
-                          <option value="">All (No Limit)</option>
-                          {rec.supported_top_n.map((n: number) => (
-                            <option key={n} value={n}>
-                              Top {n}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-700">
+                        Top-N Limit
+                      </label>
+                      <select
+                        value={chart.top_n || ""}
+                        onChange={(e) =>
+                          handleUpdateField(
+                            chart.id,
+                            "top_n",
+                            e.target.value ? Number(e.target.value) : null
+                          )
+                        }
+                        className="w-full text-xs py-1.5 px-2.5 rounded-lg border border-slate-300 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
+                      >
+                        <option value="">All (No Limit)</option>
+                        <option value="5">Top 5</option>
+                        <option value="10">Top 10</option>
+                        <option value="20">Top 20</option>
+                      </select>
+                    </div>
                   </div>
 
                   {/* Confirmation Button */}
@@ -745,7 +947,9 @@ export function RecommendedCharts({
                 className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 text-xs"
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-800">{chart.original.title}</span>
+                  <span className="font-semibold text-slate-800">
+                    {chart.customTitle || chart.original.title}
+                  </span>
                   <ChartTypeBadge chartType={chart.chart_type} />
                 </div>
                 <button
@@ -771,9 +975,22 @@ export function RecommendedCharts({
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Ready for Phase 4 visual report assembly.
+          Ready for interactive visual reporting.
         </div>
       </div>
+
+      {/* Custom Chart Builder Modal */}
+      <CustomChartModal
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setChartToEdit(null);
+        }}
+        columns={columns}
+        previewRows={previewRows}
+        editingChart={chartToEdit}
+        onSaveChart={handleSaveCustomChart}
+      />
     </section>
   );
 }

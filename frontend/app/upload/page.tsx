@@ -188,6 +188,7 @@ export default function UploadPage() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [localGenError, setLocalGenError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
   const [isSwitchingSheet, setIsSwitchingSheet] = useState(false);
   const [previewData, setPreviewData] = useState<DatasetPreviewResponse | null>(null);
   const [activeSheet, setActiveSheet] = useState<string | null>(() => contextSheet);
@@ -680,9 +681,14 @@ export default function UploadPage() {
     }
 
     setLocalGenError(null);
-    const result = await generateDashboard();
-    if (result) {
-      router.push("/dashboard");
+    try {
+      const result = await generateDashboard();
+      if (result) {
+        setIsNavigating(true);
+        router.push("/dashboard");
+      }
+    } catch {
+      setIsNavigating(false);
     }
   };
 
@@ -1567,6 +1573,7 @@ export default function UploadPage() {
             <RecommendedCharts
               recommendations={previewData.chart_recommendations || []}
               columns={previewData.columns}
+              previewRows={previewData.preview_rows}
               initialCharts={configuredCharts.length > 0 ? configuredCharts : undefined}
               onChartsChange={setConfiguredCharts}
             />
@@ -1607,13 +1614,18 @@ export default function UploadPage() {
                 <button
                   type="button"
                   onClick={handleGenerateDashboardClick}
-                  disabled={isGenerating || selectedCharts.length === 0}
+                  disabled={isGenerating || isNavigating || selectedCharts.length === 0}
                   className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 rounded-lg transition-colors shadow-sm cursor-pointer disabled:cursor-not-allowed"
                 >
                   {isGenerating ? (
                     <>
                       <RotateCw className="w-4 h-4 animate-spin" />
                       <span>Aggregating Dataset...</span>
+                    </>
+                  ) : isNavigating ? (
+                    <>
+                      <RotateCw className="w-4 h-4 animate-spin" />
+                      <span>Opening Dashboard...</span>
                     </>
                   ) : (
                     <>

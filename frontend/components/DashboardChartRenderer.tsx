@@ -51,11 +51,15 @@ function ChartIcon({ chartType }: { chartType: string }) {
     case "line":
       return <TrendingUp className="w-4 h-4 text-blue-600" />;
     case "bar":
+    case "vertical_bar":
       return <BarChart3 className="w-4 h-4 text-emerald-600" />;
     case "ranked_bar":
+    case "horizontal_bar":
       return <BarChart3 className="w-4 h-4 text-teal-600" />;
     case "donut":
       return <PieIcon className="w-4 h-4 text-purple-600" />;
+    case "pie":
+      return <PieIcon className="w-4 h-4 text-violet-600" />;
     case "histogram":
       return <SlidersHorizontal className="w-4 h-4 text-amber-600" />;
     case "stacked_bar":
@@ -157,7 +161,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-        ) : chart.chart_type === "bar" ? (
+        ) : chart.chart_type === "bar" || chart.chart_type === "vertical_bar" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chart.data} margin={{ top: 10, right: 20, left: 0, bottom: 25 }}>
@@ -200,7 +204,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
               </BarChart>
             </ResponsiveContainer>
           </div>
-        ) : chart.chart_type === "ranked_bar" ? (
+        ) : chart.chart_type === "ranked_bar" || chart.chart_type === "horizontal_bar" ? (
           <div className="w-full" style={{ height: Math.max(288, chart.data.length * 32) }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -245,7 +249,7 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
               </BarChart>
             </ResponsiveContainer>
           </div>
-        ) : chart.chart_type === "donut" ? (
+        ) : chart.chart_type === "donut" || chart.chart_type === "pie" ? (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
@@ -269,9 +273,9 @@ export function DashboardChartCard({ chart }: { chart: ComputedChart }) {
                   nameKey="label"
                   cx="50%"
                   cy="50%"
-                  innerRadius={65}
+                  innerRadius={chart.chart_type === "pie" ? 0 : 65}
                   outerRadius={95}
-                  paddingAngle={2}
+                  paddingAngle={chart.chart_type === "pie" ? 1 : 2}
                 >
                   {chart.data.map((_, idx) => (
                     <Cell key={`donut-cell-${idx}`} fill={PALETTE[idx % PALETTE.length]} />

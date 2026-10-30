@@ -1,0 +1,752 @@
+"use client";
+
+import React, { useState, useMemo } from "react";
+import {
+  X,
+  BarChart3,
+  TrendingUp,
+  PieChart as PieIcon,
+  Layers,
+  SlidersHorizontal,
+  Check,
+  AlertTriangle,
+  AlertCircle,
+  Sparkles,
+  Tag,
+  Hash,
+  Calendar,
+  ArrowUpDown,
+} from "lucide-react";
+import { ColumnProfile } from "@/app/upload/page";
+import { ConfiguredChart, ChartRecommendation } from "@/components/RecommendedCharts";
+
+export interface CustomChartModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  columns: ColumnProfile[];
+  previewRows?: (string | number | boolean | null)[][];
+  editingChart?: ConfiguredChart | null;
+  onSaveChart: (chart: ConfiguredChart) => void;
+}
+
+export type SupportedChartType =
+  | "bar"
+  | "horizontal_bar"
+  | "line"
+  | "pie"
+  | "donut"
+  | "stacked_bar"
+  | "histogram";
+
+interface ChartTypeOption {
+  type: SupportedChartType;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge: string;
+}
+
+const CHART_TYPES: ChartTypeOption[] = [
+  {
+    type: "bar",
+    label: "Vertical Bar",
+    description: "Compare quantities or totals across categories",
+    icon: BarChart3,
+    badge: "Category Bar",
+  },
+  {
+    type: "horizontal_bar",
+    label: "Horizontal Bar",
+    description: "Rank items, tools, models, or long category names",
+    icon: BarChart3,
+    badge: "Ranked Bar",
+  },
+  {
+    type: "line",
+    label: "Line Trend",
+    description: "Track performance, volume, or metrics over time",
+    icon: TrendingUp,
+    badge: "Time Series",
+  },
+  {
+    type: "pie",
+    label: "Pie Chart",
+    description: "Visualize share of total across a few segments",
+    icon: PieIcon,
+    badge: "Proportion",
+  },
+  {
+    type: "donut",
+    label: "Donut Chart",
+    description: "Modern circular breakdown with central KPI focus",
+    icon: PieIcon,
+    badge: "Ring Share",
+  },
+  {
+    type: "stacked_bar",
+    label: "Stacked Bar",
+    description: "Segment categories across a secondary dimension",
+    icon: Layers,
+    badge: "Two Dimensions",
+  },
+  {
+    type: "histogram",
+    label: "Histogram",
+    description: "Show statistical frequency distribution of numeric values",
+    icon: SlidersHorizontal,
+    badge: "Distribution",
+  },
+];
+
+function CustomChartModalDialog({
+  onClose,
+  columns,
+  editingChart = null,
+  onSaveChart,
+}: Omit<CustomChartModalProps, "isOpen">) {
+  // Column categorization helpers
+  const columnMap = useMemo(() => {
+    const map = new Map<string, ColumnProfile>();
+    for (const c of columns) {
+      map.set(c.name, c);
+    }
+    return map;
+  }, [columns]);
+
+  const dateColumns = useMemo(
+    () => columns.filter((c) => c.inferred_type.toLowerCase() === "date"),
+    [columns]
+  );
+
+  const numericColumns = useMemo(
+    () =>
+      columns.filter((c) =>
+        ["numeric", "currency", "percentage"].includes(c.inferred_type.toLowerCase())
+      ),
+    [columns]
+  );
+
+  const dimensionColumns = useMemo(
+    () =>
+      columns.filter((c) =>
+        ["categorical", "text", "boolean", "identifier", "date"].includes(
+          c.inferred_type.toLowerCase()
+        )
+      ),
+    [columns]
+  );
+
+  // Initialize state based on editingChart or defaults
+  const [chartType, setChartType] = useState<SupportedChartType>(() => {
+    if (editingChart) {
+      return (
+        editingChart.chart_type === "ranked_bar" ? "horizontal_bar" : editingChart.chart_type
+      ) as SupportedChartType;
+    }
+    return "bar";
+  });
+
+  const [dimensionCol, setDimensionCol] = useState<string>(() => {
+    if (editingChart?.dimension_column) return editingChart.dimension_column;
+    return dimensionColumns[0]?.name || "";
+  });
+
+  const [secondaryDimensionCol, setSecondaryDimensionCol] = useState<string>(() => {
+    if (editingChart?.secondary_dimension_column) return editingChart.secondary_dimension_column;
+    return dimensionColumns[1]?.name || "";
+  });
+
+  const [dateCol, setDateCol] = useState<string>(() => {
+    if (editingChart?.date_column) return editingChart.date_column;
+    return dateColumns[0]?.name || "";
+  });
+
+  const [measureCol, setMeasureCol] = useState<string>(() => {
+    if (editingChart?.measure_column) return editingChart.measure_column;
+    return numericColumns[0]?.name || "";
+  });
+
+  const [aggregation, setAggregation] = useState<string>(
+    () => editingChart?.aggregation || "sum"
+  );
+  const [topN, setTopN] = useState<number | null>(() => editingChart?.top_n ?? null);
+  const [sortOrder, setSortOrder] = useState<string>(
+    () => editingChart?.sort_order || "desc"
+  );
+  const [dateGranularity, setDateGranularity] = useState<string>(
+    () => editingChart?.date_granularity || "month"
+  );
+
+  const [userTitle, setUserTitle] = useState<string>(() => {
+    return editingChart?.customTitle || editingChart?.original?.title || "";
+  });
+
+  // Derived auto-title
+  const autoGeneratedTitle = useMemo(() => {
+    const aggName =
+      aggregation === "mean"
+        ? "Average"
+        : aggregation === "min"
+        ? "Minimum"
+        : aggregation === "max"
+        ? "Maximum"
+        : aggregation === "count"
+        ? "Count"
+        : "Total";
+
+    if (chartType === "histogram") {
+      return measureCol ? `${measureCol} Distribution` : "Value Distribution";
+    }
+    if (chartType === "line") {
+      const timeAxis = dateCol || dimensionCol || "Time";
+      if (measureCol && aggregation !== "count") {
+        return `${aggName} ${measureCol} by ${timeAxis}`;
+      }
+      return `Record Count over ${timeAxis}`;
+    }
+    if (chartType === "stacked_bar") {
+      const mLabel = measureCol ? `${aggName} ${measureCol}` : "Record Count";
+      return `${mLabel} by ${dimensionCol || "Category"} and ${secondaryDimensionCol || "Series"}`;
+    }
+    // bar, horizontal_bar, pie, donut
+    const mLabel = measureCol && aggregation !== "count" ? `${aggName} ${measureCol}` : "Count";
+    let title = `${mLabel} by ${dimensionCol || "Category"}`;
+    if (topN) {
+      title = `Top ${topN} ${title}`;
+    }
+    return title;
+  }, [
+    chartType,
+    dimensionCol,
+    secondaryDimensionCol,
+    dateCol,
+    measureCol,
+    aggregation,
+    topN,
+  ]);
+
+  const effectiveTitle = userTitle.trim() || autoGeneratedTitle;
+
+  // Validation checks
+  const validationError = useMemo((): string | null => {
+    // 1. Dimension checks
+    if (
+      ["bar", "horizontal_bar", "pie", "donut", "stacked_bar"].includes(chartType) &&
+      !dimensionCol
+    ) {
+      return "Please select a Category / Dimension column.";
+    }
+
+    if (chartType === "stacked_bar") {
+      if (!secondaryDimensionCol) {
+        return "Please select a Secondary Dimension (Series / Group By) column.";
+      }
+      if (secondaryDimensionCol === dimensionCol) {
+        return "Secondary Dimension must be different from Primary Dimension.";
+      }
+    }
+
+    if (chartType === "line" && !dateCol && !dimensionCol) {
+      return "Line chart requires either a Date column or an ordered Dimension.";
+    }
+
+    // 2. Measure & Aggregation checks
+    if (chartType === "histogram") {
+      if (!measureCol) {
+        return "Histogram requires a numeric Measure column.";
+      }
+      const p = columnMap.get(measureCol);
+      if (p && !["numeric", "currency", "percentage"].includes(p.inferred_type.toLowerCase())) {
+        return `Histogram requires numeric values. Column "${measureCol}" is classified as ${p.inferred_type}.`;
+      }
+    }
+
+    if (["sum", "mean", "min", "max"].includes(aggregation)) {
+      if (!measureCol) {
+        return `Please select a numeric Measure column for "${aggregation.toUpperCase()}" aggregation, or select "Count".`;
+      }
+      const p = columnMap.get(measureCol);
+      if (p && p.inferred_type.toLowerCase() === "identifier") {
+        return `Identifier column "${measureCol}" cannot be summed or averaged. Please choose Count or a numeric measure.`;
+      }
+    }
+
+    return null;
+  }, [
+    chartType,
+    dimensionCol,
+    secondaryDimensionCol,
+    dateCol,
+    measureCol,
+    aggregation,
+    columnMap,
+  ]);
+
+  // Cardinality warning for circular charts
+  const cardinalityWarning = useMemo((): string | null => {
+    if (["pie", "donut"].includes(chartType) && dimensionCol) {
+      const p = columnMap.get(dimensionCol);
+      if (p && p.unique_count > 30) {
+        return `Category "${dimensionCol}" has ${p.unique_count} unique values. Pie/Donut charts are difficult to read with more than 15-20 categories; consider a Bar or Ranked Horizontal Bar chart instead.`;
+      }
+    }
+    return null;
+  }, [chartType, dimensionCol, columnMap]);
+
+  // Handle Save
+  const handleSave = () => {
+    if (validationError) return;
+
+    const id = editingChart?.id || `custom_chart_${Date.now()}`;
+    const title = effectiveTitle || "Custom Chart";
+
+    const originalMock: ChartRecommendation = {
+      id,
+      title,
+      chart_type: chartType,
+      dimension_column: dimensionCol || null,
+      secondary_dimension_column:
+        chartType === "stacked_bar" ? secondaryDimensionCol || null : null,
+      date_column: chartType === "line" ? dateCol || dimensionCol || null : null,
+      measure_column: measureCol || null,
+      suggested_aggregation: aggregation,
+      supported_aggregations: ["sum", "mean", "count", "min", "max"],
+      sort_order: sortOrder,
+      top_n: topN,
+      supported_top_n: [5, 10, 20],
+      date_granularity: chartType === "line" ? dateGranularity : null,
+      explanation: `User-configured ${chartType.replace("_", " ")} chart analyzing ${measureCol || "record counts"} by ${dimensionCol || dateCol || "dimension"}.`,
+      suitability: "high",
+      suitability_reason: "Custom user-defined visualization.",
+      caveats: [],
+      requires_confirmation: false,
+    };
+
+    const savedChart: ConfiguredChart = {
+      id,
+      selected: true,
+      dismissed: false,
+      isConfirmed: true,
+      userModified: true,
+      isCustomizing: false,
+      chart_type: chartType,
+      dimension_column: dimensionCol || null,
+      secondary_dimension_column:
+        chartType === "stacked_bar" ? secondaryDimensionCol || null : null,
+      date_column: chartType === "line" ? dateCol || dimensionCol || null : null,
+      measure_column: measureCol || null,
+      aggregation,
+      date_granularity: chartType === "line" ? dateGranularity : null,
+      top_n: topN,
+      sort_order: sortOrder,
+      customTitle: title,
+      isCustom: true,
+      original: originalMock,
+    };
+
+    onSaveChart(savedChart);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+      <div
+        className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-3xl w-full my-8 flex flex-col max-h-[92vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="custom-chart-modal-title"
+      >
+        {/* Modal Header */}
+        <div className="p-5 sm:p-6 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-600 shadow-2xs">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h2
+                id="custom-chart-modal-title"
+                className="text-base font-bold text-slate-900 tracking-tight"
+              >
+                {editingChart ? "Edit Custom Chart" : "Create Custom Chart"}
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Configure dimensions, measures, aggregations, and layout parameters from your dataset.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+            aria-label="Close chart builder"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-6 space-y-6 overflow-y-auto flex-1 text-slate-800">
+          {/* Section 1: Chart Type Selector */}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2.5">
+              1. Select Chart Type
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+              {CHART_TYPES.map((opt) => {
+                const Icon = opt.icon;
+                const isSelected = chartType === opt.type;
+                return (
+                  <button
+                    key={opt.type}
+                    type="button"
+                    onClick={() => setChartType(opt.type)}
+                    className={`p-3 rounded-xl border text-left flex flex-col justify-between transition-all ${
+                      isSelected
+                        ? "border-brand-600 bg-brand-50/40 ring-2 ring-brand-500/20 shadow-xs"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-2">
+                      <div
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                          isSelected ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      {isSelected && <Check className="w-4 h-4 text-brand-600 stroke-[3]" />}
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-slate-900 block leading-tight">
+                        {opt.label}
+                      </span>
+                      <span className="text-[10px] text-slate-500 leading-snug line-clamp-2 mt-0.5">
+                        {opt.description}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Section 2: Data Mappings (Dimensions & Measures) */}
+          <div className="space-y-4 pt-2 border-t border-slate-100">
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+              2. Data Mappings & Dimensions
+            </label>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Primary Dimension (Category or Time) */}
+              {chartType !== "histogram" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-slate-500" />
+                      <span>{chartType === "line" ? "Date or Primary Dimension" : "Category / Dimension"}</span>
+                    </label>
+                    <span className="text-[10px] font-semibold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">
+                      Required
+                    </span>
+                  </div>
+
+                  <select
+                    value={chartType === "line" && dateCol ? dateCol : dimensionCol}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (chartType === "line") {
+                        const prof = columnMap.get(val);
+                        if (prof?.inferred_type.toLowerCase() === "date") {
+                          setDateCol(val);
+                          setDimensionCol("");
+                        } else {
+                          setDimensionCol(val);
+                          setDateCol("");
+                        }
+                      } else {
+                        setDimensionCol(val);
+                      }
+                    }}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                  >
+                    <option value="">-- Choose Category Column --</option>
+                    {columns.map((col) => (
+                      <option key={col.name} value={col.name}>
+                        {col.name} ({col.inferred_type.toUpperCase()} · {col.unique_count} distinct)
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-slate-500">
+                    Groups your records into distinct labels on the primary axis.
+                  </p>
+                </div>
+              )}
+
+              {/* Secondary Dimension (Only for Stacked Bar) */}
+              {chartType === "stacked_bar" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Secondary Dimension (Series)</span>
+                    </label>
+                    <span className="text-[10px] font-semibold text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded">
+                      Required
+                    </span>
+                  </div>
+
+                  <select
+                    value={secondaryDimensionCol}
+                    onChange={(e) => setSecondaryDimensionCol(e.target.value)}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                  >
+                    <option value="">-- Choose Series / Segment Column --</option>
+                    {dimensionColumns
+                      .filter((c) => c.name !== dimensionCol)
+                      .map((col) => (
+                        <option key={col.name} value={col.name}>
+                          {col.name} ({col.inferred_type.toUpperCase()})
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-[11px] text-slate-500">
+                    Splits each primary category bar into stacked color segments.
+                  </p>
+                </div>
+              )}
+
+              {/* Date Granularity (Only for Line charts with Date column) */}
+              {chartType === "line" && dateCol && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Time Bucket Granularity</span>
+                  </label>
+                  <select
+                    value={dateGranularity}
+                    onChange={(e) => setDateGranularity(e.target.value)}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                  >
+                    <option value="day">Daily (YYYY-MM-DD)</option>
+                    <option value="week">Weekly (YYYY-Www)</option>
+                    <option value="month">Monthly (YYYY-MM)</option>
+                    <option value="year">Yearly (YYYY)</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Measure Column */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                    <Hash className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Quantitative Measure (Metric)</span>
+                  </label>
+                  {chartType === "histogram" && (
+                    <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                      Numeric Only
+                    </span>
+                  )}
+                </div>
+
+                <select
+                  value={measureCol}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setMeasureCol(val);
+                    if (!val && aggregation !== "count") {
+                      setAggregation("count");
+                    }
+                  }}
+                  className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                >
+                  {chartType !== "histogram" && (
+                    <option value="">(None - Record Frequency Count)</option>
+                  )}
+                  {numericColumns.map((col) => (
+                    <option key={col.name} value={col.name}>
+                      {col.name} ({col.inferred_type.toUpperCase()})
+                    </option>
+                  ))}
+                  {/* Allow non-numeric only for count */}
+                  {columns
+                    .filter(
+                      (c) =>
+                        !["numeric", "currency", "percentage"].includes(
+                          c.inferred_type.toLowerCase()
+                        )
+                    )
+                    .map((col) => (
+                      <option key={col.name} value={col.name} disabled={chartType === "histogram"}>
+                        {col.name} ({col.inferred_type.toUpperCase()} - Count only)
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[11px] text-slate-500">
+                  {chartType === "histogram"
+                    ? "Column binned into frequency intervals."
+                    : "The numeric values calculated for each group."}
+                </p>
+              </div>
+
+              {/* Aggregation Method */}
+              {chartType !== "histogram" && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-800">
+                    Aggregation Function
+                  </label>
+                  <select
+                    value={aggregation}
+                    onChange={(e) => setAggregation(e.target.value)}
+                    disabled={!measureCol}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    <option value="sum">SUM (Total)</option>
+                    <option value="mean">AVERAGE (Mean)</option>
+                    <option value="count">COUNT (Number of Records)</option>
+                    <option value="min">MINIMUM (Smallest Value)</option>
+                    <option value="max">MAXIMUM (Largest Value)</option>
+                  </select>
+                  <p className="text-[11px] text-slate-500">
+                    {!measureCol
+                      ? "Locked to Count because no measure column is selected."
+                      : "Mathematical operation applied to group values."}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section 3: Sorting & Top-N Filtering */}
+          {["bar", "horizontal_bar", "pie", "donut"].includes(chartType) && (
+            <div className="space-y-4 pt-2 border-t border-slate-100">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                3. Sorting & Cardinality Controls
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Top N Filter */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-800">
+                    Top-N Categories Limit
+                  </label>
+                  <select
+                    value={topN || ""}
+                    onChange={(e) => setTopN(e.target.value ? Number(e.target.value) : null)}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                  >
+                    <option value="">All Categories (No Limit)</option>
+                    <option value="5">Top 5 Only</option>
+                    <option value="10">Top 10 Only</option>
+                    <option value="20">Top 20 Only</option>
+                  </select>
+                  <p className="text-[11px] text-slate-500">
+                    Limit is applied strictly after aggregation.
+                  </p>
+                </div>
+
+                {/* Sort Order */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+                    <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Sorting Order</span>
+                  </label>
+                  <select
+                    value={sortOrder}
+                    onChange={(e) => setSortOrder(e.target.value)}
+                    className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs"
+                  >
+                    <option value="desc">Highest → Lowest (Descending)</option>
+                    <option value="asc">Lowest → Highest (Ascending)</option>
+                    <option value="original">Original / Natural Order</option>
+                  </select>
+                  <p className="text-[11px] text-slate-500">
+                    Order of categories displayed on the chart axis.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Section 4: Chart Title & Customization */}
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                4. Chart Title
+              </label>
+              {userTitle && (
+                <button
+                  type="button"
+                  onClick={() => setUserTitle("")}
+                  className="text-[11px] text-brand-600 hover:text-brand-800 font-medium"
+                >
+                  Reset to Auto-Generated Title
+                </button>
+              )}
+            </div>
+
+            <input
+              type="text"
+              value={userTitle || autoGeneratedTitle}
+              onChange={(e) => setUserTitle(e.target.value)}
+              placeholder={autoGeneratedTitle || "e.g. Total Production by Machine"}
+              className="w-full text-xs py-2 px-3 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 shadow-2xs font-medium"
+            />
+          </div>
+
+          {/* Warnings & Alerts */}
+          {cardinalityWarning && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-semibold">Cardinality Consideration:</span>
+                <p className="text-[11px] leading-relaxed text-amber-900/90">
+                  {cardinalityWarning}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {validationError && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2 font-medium">
+              <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+              <span>{validationError}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer Actions */}
+        <div className="p-4 sm:p-5 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+          <span className="text-[11px] text-slate-500">
+            Custom charts are preserved in your reporting session and rendered via Recharts.
+          </span>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors shadow-2xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={Boolean(validationError)}
+              className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 rounded-lg transition-colors shadow-sm disabled:cursor-not-allowed cursor-pointer"
+            >
+              <Check className="w-4 h-4" />
+              <span>{editingChart ? "Update Chart" : "Add Chart to Dashboard"}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function CustomChartModal(props: CustomChartModalProps) {
+  if (!props.isOpen) return null;
+  return <CustomChartModalDialog key={props.editingChart?.id || "new_chart"} {...props} />;
+}
